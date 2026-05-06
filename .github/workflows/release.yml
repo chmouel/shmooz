@@ -1,0 +1,178 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact: shmooz-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            artifact: shmooz-aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            # Install aarch64 wayland dev libs
+            sudo dpkg --add-architecture arm64
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list.d/*.list || true
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main universe" | sudo tee /etc/apt/sources.list.d/arm64.list
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+            sudo apt-get update
+            sudo apt-get install -y libwayland-dev:arm64
+          fi
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_SYSROOT_DIR: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '/usr/aarch64-linux-gnu' || '' }}
+          PKG_CONFIG_PATH: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '/usr/lib/aarch64-linux-gnu/pkgconfig' || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/shmooz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+
+      - name: Prepare binaries
+        run: |
+          mv shmooz-x86_64-unknown-linux-gnu/shmooz shmooz-x86_64-unknown-linux-gnu
+          mv shmooz-aarch64-unknown-linux-gnu/shmooz shmooz-aarch64-unknown-linux-gnu
+          chmod +x shmooz-x86_64-unknown-linux-gnu shmooz-aarch64-unknown-linux-gnu
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          prev_tag=$(git tag --sort=-v:refname | head -2 | tail -1)
+          if [ -z "$prev_tag" ] || [ "$prev_tag" = "${{ github.ref_name }}" ]; then
+            echo "body=Initial release" >> "$GITHUB_OUTPUT"
+          else
+            changelog=$(git log --pretty=format:"- %s" "$prev_tag".."${{ github.ref_name }}")
+            {
+              echo "body<<EOF"
+              echo "$changelog"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            shmooz-x86_64-unknown-linux-gnu
+            shmooz-aarch64-unknown-linux-gnu
+
+  aur:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Get source checksum
+        id: checksum
+        run: |
+          url="https://github.com/${{ github.repository }}/archive/${{ github.ref_name }}.tar.gz"
+          sha256=$(curl -sL "$url" | sha256sum | cut -d' ' -f1)
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<CFG
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          CFG
+
+      - name: Clone AUR repo
+        run: git clone ssh://aur@aur.archlinux.org/shmooz.git aur
+
+      - name: Update PKGBUILD
+        run: |
+          cat > aur/PKGBUILD <<'PKGBUILD'
+          # Maintainer: Chmouel Boudjnah <chmouel@chmouel.com>
+          pkgname=shmooz
+          pkgver=${{ steps.version.outputs.version }}
+          pkgrel=1
+          pkgdesc="A zoom / magnifier utility for Wayland compositors"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/${{ github.repository }}"
+          license=('Apache-2.0')
+          depends=('wayland')
+          makedepends=('cargo')
+          source=("$pkgname-$pkgver.tar.gz::https://github.com/${{ github.repository }}/archive/v$pkgver.tar.gz")
+          sha256sums=('${{ steps.checksum.outputs.sha256 }}')
+
+          prepare() {
+              cd "$pkgname-$pkgver"
+              export RUSTUP_TOOLCHAIN=stable
+              cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+          }
+
+          build() {
+              cd "$pkgname-$pkgver"
+              export RUSTUP_TOOLCHAIN=stable
+              export CARGO_TARGET_DIR=target
+              cargo build --frozen --release
+          }
+
+          package() {
+              cd "$pkgname-$pkgver"
+              install -Dm755 target/release/$pkgname "$pkgdir/usr/bin/$pkgname"
+              install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+          }
+          PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          cd aur
+          docker run --rm -v "$PWD:/pkg" archlinux:base-devel bash -c \
+            "chown -R nobody /pkg && cd /pkg && sudo -u nobody makepkg --printsrcinfo > .SRCINFO"
+
+      - name: Push to AUR
+        run: |
+          cd aur
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet && exit 0
+          git commit -m "Update to ${{ steps.version.outputs.version }}"
+          git push
