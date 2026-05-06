@@ -23,11 +23,7 @@ pub fn begin_output_capture(state: &mut AppState, output_id: u32) -> Result<()> 
         return Ok(());
     }
 
-    let manager = state
-        .globals
-        .screencopy_manager
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("zwlr_screencopy_manager_v1"))?;
+    let manager = state.globals.screencopy_manager()?;
     let qh = state
         .queue_handle
         .clone()
@@ -85,10 +81,10 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, u32> for AppState
                     }
                 };
 
-                let shm = match state.globals.shm.clone() {
-                    Some(shm) => shm,
-                    None => {
-                        state.record_fatal(AppError::missing_protocol("wl_shm"));
+                let shm = match state.globals.shm() {
+                    Ok(shm) => shm,
+                    Err(err) => {
+                        state.record_fatal(err);
                         return;
                     }
                 };

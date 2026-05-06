@@ -9,9 +9,9 @@ pub enum CloseKey {
     X,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Config {
+    #[allow(dead_code)]
     pub app_id: &'static str,
     pub close_key: Option<CloseKey>,
     pub mouse_track: bool,

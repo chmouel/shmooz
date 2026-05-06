@@ -37,26 +37,47 @@ pub struct BoundGlobals {
 
 impl BoundGlobals {
     pub fn validate(&self) -> Result<()> {
-        if self.compositor.is_none() {
-            return Err(AppError::missing_protocol("wl_compositor"));
-        }
-        if self.layer_shell.is_none() {
-            return Err(AppError::missing_protocol("zwlr_layer_shell_v1"));
-        }
-        if self.shm.is_none() {
-            return Err(AppError::missing_protocol("wl_shm"));
-        }
-        if self.screencopy_manager.is_none() {
-            return Err(AppError::missing_protocol("zwlr_screencopy_manager_v1"));
-        }
-        if self.viewporter.is_none() {
-            return Err(AppError::missing_protocol("wp_viewporter"));
-        }
+        self.compositor()?;
+        self.layer_shell()?;
+        self.shm()?;
+        self.screencopy_manager()?;
+        self.viewporter()?;
         if self.seat.is_none() {
             return Err(AppError::missing_protocol("wl_seat"));
         }
-
         Ok(())
+    }
+
+    pub fn compositor(&self) -> Result<wl_compositor::WlCompositor> {
+        self.compositor
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("wl_compositor"))
+    }
+
+    pub fn shm(&self) -> Result<wl_shm::WlShm> {
+        self.shm
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("wl_shm"))
+    }
+
+    pub fn layer_shell(&self) -> Result<zwlr_layer_shell_v1::ZwlrLayerShellV1> {
+        self.layer_shell
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("zwlr_layer_shell_v1"))
+    }
+
+    pub fn viewporter(&self) -> Result<wp_viewporter::WpViewporter> {
+        self.viewporter
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("wp_viewporter"))
+    }
+
+    pub fn screencopy_manager(
+        &self,
+    ) -> Result<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1> {
+        self.screencopy_manager
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("zwlr_screencopy_manager_v1"))
     }
 }
 
@@ -66,7 +87,6 @@ pub struct AppState {
     pub queue_handle: Option<QueueHandle<AppState>>,
     pub outputs: BTreeMap<u32, OutputState>,
     pub windows: BTreeMap<u32, WindowState>,
-    #[allow(dead_code)]
     pub focused_window: Option<u32>,
     pub loop_signal: Option<LoopSignal>,
     pub fatal_error: Option<AppError>,
@@ -129,14 +149,17 @@ impl AppState {
             .collect())
     }
 
+    pub fn request_exit(&self) {
+        if let Some(loop_signal) = &self.loop_signal {
+            loop_signal.stop();
+        }
+    }
+
     pub fn record_fatal(&mut self, error: AppError) {
         if self.fatal_error.is_none() {
             self.fatal_error = Some(error);
         }
-
-        if let Some(loop_signal) = &self.loop_signal {
-            loop_signal.stop();
-        }
+        self.request_exit();
     }
 
     pub fn take_fatal_error(&mut self) -> Option<AppError> {

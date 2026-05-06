@@ -86,7 +86,7 @@ pub fn screen_center(size: Size) -> Point {
     }
 }
 
-fn aspect_ratio(logical_size: Size, buffer_size: Size) -> f64 {
+pub fn aspect_ratio(logical_size: Size, buffer_size: Size) -> f64 {
     if logical_size.width > 0.0 && logical_size.height > 0.0 {
         logical_size.width / logical_size.height
     } else if buffer_size.width > 0.0 && buffer_size.height > 0.0 {

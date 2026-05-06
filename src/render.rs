@@ -60,21 +60,24 @@ pub fn draw_spotlight_overlay(
     let radius_sq = radius * radius;
     let center_x = center_x.min(width.saturating_sub(1)) as i32;
     let center_y = center_y.min(height.saturating_sub(1)) as i32;
+    let dim = 0xAA00_0000;
 
     for y in 0..height {
         let row = &mut pixels[y * width..(y + 1) * width];
-        row.fill(0xAA00_0000);
-
         let dy = y as i32 - center_y;
         let dy_sq = f64::from(dy * dy);
+
         if dy_sq >= radius_sq {
+            row.fill(dim);
             continue;
         }
 
         let half_width = (radius_sq - dy_sq).sqrt() as i32;
         let x0 = (center_x - half_width).clamp(0, width.saturating_sub(1) as i32) as usize;
         let x1 = (center_x + half_width + 1).clamp(0, width as i32) as usize;
+        row[..x0].fill(dim);
         row[x0..x1].fill(0x0000_0000);
+        row[x1..].fill(dim);
     }
 }
 

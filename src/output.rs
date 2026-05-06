@@ -118,6 +118,24 @@ impl OutputState {
             self.logical_scale = self.geometry.width as f64 / self.logical_geometry.width as f64;
         }
     }
+
+    pub fn logical_size(&self) -> (i32, i32) {
+        let width = if self.logical_geometry.width > 0 {
+            self.logical_geometry.width
+        } else {
+            self.geometry.width
+        };
+        let height = if self.logical_geometry.height > 0 {
+            self.logical_geometry.height
+        } else {
+            self.geometry.height
+        };
+        (width, height)
+    }
+
+    pub fn buffer_dimensions(&self) -> Option<(i32, i32)> {
+        self.buffer.as_ref().map(|b| (b.width, b.height))
+    }
 }
 
 pub fn output_matches_filter(output: &OutputState, filter: Option<&str>) -> bool {

@@ -10,16 +10,17 @@ use crate::{
     overlay,
     shm::ShmBuffer,
     state::AppState,
-    zoom::{Size, ViewRect, apply_zoom, clamp_view},
+    zoom::{Size, ViewRect, apply_zoom, aspect_ratio, clamp_view},
 };
 
 pub const APP_TITLE: &str = "shmooz";
 
-#[allow(dead_code)]
 pub struct WindowState {
+    #[allow(dead_code)]
     pub output_id: u32,
     pub surface: wl_surface::WlSurface,
     pub viewport: wp_viewport::WpViewport,
+    #[allow(dead_code)]
     pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub overlay_surface: Option<wl_surface::WlSurface>,
     pub overlay_subsurface: Option<wl_subsurface::WlSubsurface>,
@@ -51,21 +52,9 @@ pub fn create_window_for_output(
         return Ok(());
     }
 
-    let compositor = state
-        .globals
-        .compositor
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_compositor"))?;
-    let layer_shell = state
-        .globals
-        .layer_shell
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("zwlr_layer_shell_v1"))?;
-    let viewporter = state
-        .globals
-        .viewporter
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wp_viewporter"))?;
+    let compositor = state.globals.compositor()?;
+    let layer_shell = state.globals.layer_shell()?;
+    let viewporter = state.globals.viewporter()?;
     let wl_output = state
         .outputs
         .get(&output_id)
@@ -87,34 +76,29 @@ pub fn create_window_for_output(
         qh,
         output_id,
     );
-    let buffer_size = state
+    let (bw, bh) = state
         .outputs
         .get(&output_id)
-        .and_then(|output| output.buffer.as_ref())
-        .map(|buffer| Size {
-            width: buffer.width as f64,
-            height: buffer.height as f64,
-        })
+        .and_then(|output| output.buffer_dimensions())
         .ok_or_else(|| {
             AppError::runtime(format!(
                 "output {output_id} has no captured buffer for window creation"
             ))
         })?;
+    let buffer_size = Size {
+        width: bw as f64,
+        height: bh as f64,
+    };
     let initial_view_source = ViewRect::full(buffer_size);
     let logical_size = state
         .outputs
         .get(&output_id)
-        .map(|output| Size {
-            width: if output.logical_geometry.width > 0 {
-                output.logical_geometry.width as f64
-            } else {
-                output.geometry.width as f64
-            },
-            height: if output.logical_geometry.height > 0 {
-                output.logical_geometry.height as f64
-            } else {
-                output.geometry.height as f64
-            },
+        .map(|output| {
+            let (w, h) = output.logical_size();
+            Size {
+                width: w as f64,
+                height: h as f64,
+            }
         })
         .unwrap_or_default();
 
@@ -206,42 +190,24 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
                     .map(|output| output.transform.to_wayland());
 
                 let zoom_setup = if state.config.initial_zoom > 0.0 {
-                    let zoom_pixels = state
-                        .outputs
-                        .get(output_id)
-                        .map(|output| output.geometry.height as f64 * state.config.initial_zoom)
+                    let output = state.outputs.get(output_id);
+                    let zoom_pixels = output
+                        .map(|o| o.geometry.height as f64 * state.config.initial_zoom)
                         .unwrap_or(0.0);
-                    let logical_size = Size {
-                        width: state
-                            .outputs
-                            .get(output_id)
-                            .map(|output| {
-                                if output.logical_geometry.width > 0 {
-                                    output.logical_geometry.width as f64
-                                } else {
-                                    output.geometry.width as f64
-                                }
-                            })
-                            .unwrap_or_default(),
-                        height: state
-                            .outputs
-                            .get(output_id)
-                            .map(|output| {
-                                if output.logical_geometry.height > 0 {
-                                    output.logical_geometry.height as f64
-                                } else {
-                                    output.geometry.height as f64
-                                }
-                            })
-                            .unwrap_or_default(),
-                    };
-                    let buffer_size = state
-                        .outputs
-                        .get(output_id)
-                        .and_then(|output| output.buffer.as_ref())
-                        .map(|buffer| Size {
-                            width: buffer.width as f64,
-                            height: buffer.height as f64,
+                    let logical_size = output
+                        .map(|o| {
+                            let (w, h) = o.logical_size();
+                            Size {
+                                width: w as f64,
+                                height: h as f64,
+                            }
+                        })
+                        .unwrap_or_default();
+                    let buffer_size = output
+                        .and_then(|o| o.buffer_dimensions())
+                        .map(|(w, h)| Size {
+                            width: w as f64,
+                            height: h as f64,
                         })
                         .unwrap_or_default();
                     Some((zoom_pixels, logical_size, buffer_size))
@@ -276,9 +242,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
             }
             zwlr_layer_surface_v1::Event::Closed => {
                 tracing::info!(output_id = *output_id, "received compositor close request");
-                if let Some(loop_signal) = &state.loop_signal {
-                    loop_signal.stop();
-                }
+                state.request_exit();
             }
             _ => {}
         }
@@ -304,29 +268,16 @@ pub fn render_window(state: &mut AppState, output_id: u32) {
             return;
         };
 
+        let (lw, lh) = output.logical_size();
         let logical_size = Size {
-            width: if output.logical_geometry.width > 0 {
-                output.logical_geometry.width as f64
-            } else {
-                output.geometry.width as f64
-            },
-            height: if output.logical_geometry.height > 0 {
-                output.logical_geometry.height as f64
-            } else {
-                output.geometry.height as f64
-            },
+            width: lw as f64,
+            height: lh as f64,
         };
         let buffer_size = Size {
             width: buffer.width as f64,
             height: buffer.height as f64,
         };
-        let ratio = if logical_size.width > 0.0 && logical_size.height > 0.0 {
-            logical_size.width / logical_size.height
-        } else if buffer_size.width > 0.0 && buffer_size.height > 0.0 {
-            buffer_size.width / buffer_size.height
-        } else {
-            1.0
-        };
+        let ratio = aspect_ratio(logical_size, buffer_size);
         clamp_view(&mut window.view_source, buffer_size, ratio);
 
         (

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::os::fd::AsFd;
 
 use memmap2::{MmapMut, MmapOptions};
@@ -17,8 +15,11 @@ pub struct ShmBuffer {
     pub data: MmapMut,
     pub width: i32,
     pub height: i32,
+    #[allow(dead_code)]
     pub stride: i32,
+    #[allow(dead_code)]
     pub size: usize,
+    #[allow(dead_code)]
     pub format: wl_shm::Format,
 }
 

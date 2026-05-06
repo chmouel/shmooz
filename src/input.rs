@@ -235,9 +235,7 @@ fn pointer_button(
             }
         }
         BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
-            if let Some(loop_signal) = &state.loop_signal {
-                loop_signal.stop();
-            }
+            state.request_exit();
         }
         _ => {}
     }
@@ -274,17 +272,13 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         .close_key
         .is_some_and(|close_key| close_key.key_code() == key)
     {
-        if let Some(loop_signal) = &state.loop_signal {
-            loop_signal.stop();
-        }
+        state.request_exit();
         return;
     }
 
     match key {
         KEY_ESC if state.config.close_key.is_none() => {
-            if let Some(loop_signal) = &state.loop_signal {
-                loop_signal.stop();
-            }
+            state.request_exit();
         }
         KEY_0 | KEY_KP0 => restore_focused_window(state),
         KEY_S => {
@@ -317,20 +311,8 @@ fn handle_key_action(state: &mut AppState, key: u32) {
         KEY_RIGHT => pan_focused_window(state, output_id, KEYBOARD_PAN_STEP, 0.0),
         KEY_UP => pan_focused_window(state, output_id, 0.0, -KEYBOARD_PAN_STEP),
         KEY_DOWN => pan_focused_window(state, output_id, 0.0, KEYBOARD_PAN_STEP),
-        KEY_LEFTBRACE => {
-            let previous = state.spotlight_radius_frac;
-            state.spotlight_radius_frac = (state.spotlight_radius_frac - 0.05).max(0.05);
-            if (state.spotlight_radius_frac - previous).abs() > f64::EPSILON {
-                overlay::refresh_visible_spotlight_overlays(state);
-            }
-        }
-        KEY_RIGHTBRACE => {
-            let previous = state.spotlight_radius_frac;
-            state.spotlight_radius_frac = (state.spotlight_radius_frac + 0.05).min(0.90);
-            if (state.spotlight_radius_frac - previous).abs() > f64::EPSILON {
-                overlay::refresh_visible_spotlight_overlays(state);
-            }
-        }
+        KEY_LEFTBRACE => adjust_spotlight_radius(state, -0.05),
+        KEY_RIGHTBRACE => adjust_spotlight_radius(state, 0.05),
         _ => {}
     }
 }
@@ -355,13 +337,13 @@ fn pan_focused_window(state: &mut AppState, output_id: u32, dx: f64, dy: f64) {
 }
 
 fn active_window_id(state: &AppState) -> Option<u32> {
-    if let Some(output_id) = state.focused_window {
-        Some(output_id)
-    } else if state.windows.len() == 1 {
-        state.windows.keys().next().copied()
-    } else {
-        None
-    }
+    state.focused_window.or_else(|| {
+        if state.windows.len() == 1 {
+            state.windows.keys().next().copied()
+        } else {
+            None
+        }
+    })
 }
 
 fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_change: f64) {
@@ -399,6 +381,14 @@ fn zoom_focused_window(state: &mut AppState, output_id: u32, zoom_change: f64, c
     window::render_window(state, output_id);
 }
 
+fn adjust_spotlight_radius(state: &mut AppState, delta: f64) {
+    let previous = state.spotlight_radius_frac;
+    state.spotlight_radius_frac = (state.spotlight_radius_frac + delta).clamp(0.05, 0.90);
+    if (state.spotlight_radius_frac - previous).abs() > f64::EPSILON {
+        overlay::refresh_visible_spotlight_overlays(state);
+    }
+}
+
 fn is_repeatable_key(key: u32) -> bool {
     matches!(
         key,
@@ -419,17 +409,12 @@ fn logical_size(state: &AppState, output_id: u32) -> Size {
     state
         .outputs
         .get(&output_id)
-        .map(|output| Size {
-            width: if output.logical_geometry.width > 0 {
-                output.logical_geometry.width as f64
-            } else {
-                output.geometry.width as f64
-            },
-            height: if output.logical_geometry.height > 0 {
-                output.logical_geometry.height as f64
-            } else {
-                output.geometry.height as f64
-            },
+        .map(|output| {
+            let (w, h) = output.logical_size();
+            Size {
+                width: w as f64,
+                height: h as f64,
+            }
         })
         .unwrap_or_default()
 }
@@ -438,10 +423,10 @@ fn buffer_size(state: &AppState, output_id: u32) -> Size {
     state
         .outputs
         .get(&output_id)
-        .and_then(|output| output.buffer.as_ref())
-        .map(|buffer| Size {
-            width: buffer.width as f64,
-            height: buffer.height as f64,
+        .and_then(|output| output.buffer_dimensions())
+        .map(|(w, h)| Size {
+            width: w as f64,
+            height: h as f64,
         })
         .unwrap_or_default()
 }

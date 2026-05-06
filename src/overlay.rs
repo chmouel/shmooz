@@ -84,16 +84,8 @@ fn create_spotlight_overlay(
     let Some(subcompositor) = state.globals.subcompositor.clone() else {
         return Ok(());
     };
-    let compositor = state
-        .globals
-        .compositor
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_compositor"))?;
-    let shm = state
-        .globals
-        .shm
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_shm"))?;
+    let compositor = state.globals.compositor()?;
+    let shm = state.globals.shm()?;
     let size = logical_size(state, output_id);
     if size.0 <= 0 || size.1 <= 0 {
         return Ok(());
@@ -132,16 +124,8 @@ fn create_zoom_badge_overlay(
         return Ok(());
     }
 
-    let compositor = state
-        .globals
-        .compositor
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_compositor"))?;
-    let shm = state
-        .globals
-        .shm
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_shm"))?;
+    let compositor = state.globals.compositor()?;
+    let shm = state.globals.shm()?;
     let subcompositor = state
         .globals
         .subcompositor
@@ -317,19 +301,7 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
     state
         .outputs
         .get(&output_id)
-        .map(|output| {
-            let width = if output.logical_geometry.width > 0 {
-                output.logical_geometry.width
-            } else {
-                output.geometry.width
-            };
-            let height = if output.logical_geometry.height > 0 {
-                output.logical_geometry.height
-            } else {
-                output.geometry.height
-            };
-            (width, height)
-        })
+        .map(|output| output.logical_size())
         .unwrap_or((0, 0))
 }
 
