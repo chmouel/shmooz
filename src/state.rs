@@ -10,9 +10,12 @@ use wayland_client::{
 };
 use wayland_protocols::{
     wp::viewporter::client::wp_viewporter,
-    xdg::{shell::client::xdg_wm_base, xdg_output::zv1::client::zxdg_output_manager_v1},
+    xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
 };
-use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+use wayland_protocols_wlr::{
+    layer_shell::v1::client::zwlr_layer_shell_v1,
+    screencopy::v1::client::zwlr_screencopy_manager_v1,
+};
 
 use crate::{
     config::Config,
@@ -25,7 +28,7 @@ use crate::{
 pub struct BoundGlobals {
     pub compositor: Option<wl_compositor::WlCompositor>,
     pub subcompositor: Option<wl_subcompositor::WlSubcompositor>,
-    pub shell: Option<xdg_wm_base::XdgWmBase>,
+    pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     pub shm: Option<wl_shm::WlShm>,
     pub xdg_output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub screencopy_manager: Option<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1>,
@@ -40,8 +43,8 @@ impl BoundGlobals {
         if self.compositor.is_none() {
             return Err(AppError::missing_protocol("wl_compositor"));
         }
-        if self.shell.is_none() {
-            return Err(AppError::missing_protocol("xdg_wm_base"));
+        if self.layer_shell.is_none() {
+            return Err(AppError::missing_protocol("zwlr_layer_shell_v1"));
         }
         if self.shm.is_none() {
             return Err(AppError::missing_protocol("wl_shm"));

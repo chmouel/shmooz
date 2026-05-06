@@ -2,13 +2,12 @@ use wayland_client::{
     Dispatch, QueueHandle, delegate_noop,
     protocol::{wl_subsurface, wl_surface},
 };
-use wayland_protocols::{
-    wp::viewporter::client::wp_viewport,
-    xdg::shell::client::{xdg_surface, xdg_toplevel},
+use wayland_protocols::wp::viewporter::client::wp_viewport;
+use wayland_protocols_wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1, zwlr_layer_surface_v1,
 };
 
 use crate::{
-    config::APP_ID,
     error::{AppError, Result},
     overlay,
     shm::ShmBuffer,
@@ -17,15 +16,13 @@ use crate::{
 };
 
 pub const APP_TITLE: &str = "shmooz";
-pub const APPLICATION_ID: &str = APP_ID;
 
 #[allow(dead_code)]
 pub struct WindowState {
     pub output_id: u32,
     pub surface: wl_surface::WlSurface,
     pub viewport: wp_viewport::WpViewport,
-    pub xdg_surface: xdg_surface::XdgSurface,
-    pub xdg_toplevel: xdg_toplevel::XdgToplevel,
+    pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     pub overlay_surface: Option<wl_surface::WlSurface>,
     pub overlay_subsurface: Option<wl_subsurface::WlSubsurface>,
     pub overlay_buffer: Option<ShmBuffer>,
@@ -61,11 +58,11 @@ pub fn create_window_for_output(
         .compositor
         .clone()
         .ok_or_else(|| AppError::missing_protocol("wl_compositor"))?;
-    let shell = state
+    let layer_shell = state
         .globals
-        .shell
+        .layer_shell
         .clone()
-        .ok_or_else(|| AppError::missing_protocol("xdg_wm_base"))?;
+        .ok_or_else(|| AppError::missing_protocol("zwlr_layer_shell_v1"))?;
     let viewporter = state
         .globals
         .viewporter
@@ -84,8 +81,14 @@ pub fn create_window_for_output(
 
     let surface = compositor.create_surface(qh, ());
     let viewport = viewporter.get_viewport(&surface, qh, ());
-    let xdg_surface = shell.get_xdg_surface(&surface, qh, output_id);
-    let xdg_toplevel = xdg_surface.get_toplevel(qh, output_id);
+    let layer_surface = layer_shell.get_layer_surface(
+        &surface,
+        Some(&wl_output),
+        zwlr_layer_shell_v1::Layer::Overlay,
+        APP_TITLE.to_owned(),
+        qh,
+        output_id,
+    );
     let buffer_size = state
         .outputs
         .get(&output_id)
@@ -117,11 +120,19 @@ pub fn create_window_for_output(
         })
         .unwrap_or_default();
 
-    xdg_toplevel.set_app_id(APPLICATION_ID.to_owned());
-    xdg_toplevel.set_title(APP_TITLE.to_owned());
-    xdg_toplevel.set_fullscreen(Some(&wl_output));
+    layer_surface.set_anchor(
+        zwlr_layer_surface_v1::Anchor::Top
+            | zwlr_layer_surface_v1::Anchor::Bottom
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right,
+    );
+    layer_surface.set_size(0, 0);
+    layer_surface.set_exclusive_zone(-1);
+    layer_surface.set_keyboard_interactivity(
+        zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
+    );
 
-    tracing::info!(output_id, "creating fullscreen window");
+    tracing::info!(output_id, "creating layer shell overlay window");
 
     state.windows.insert(
         output_id,
@@ -129,8 +140,7 @@ pub fn create_window_for_output(
             output_id,
             surface,
             viewport,
-            xdg_surface,
-            xdg_toplevel,
+            layer_surface,
             overlay_surface: None,
             overlay_subsurface: None,
             overlay_buffer: None,
@@ -163,124 +173,111 @@ pub fn create_window_for_output(
     Ok(())
 }
 
-impl Dispatch<xdg_surface::XdgSurface, u32> for AppState {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
     fn event(
         state: &mut Self,
-        xdg_surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        output_id: &u32,
-        _: &wayland_client::Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            tracing::info!(
-                output_id = *output_id,
-                serial,
-                "received xdg_surface configure"
-            );
-            xdg_surface.ack_configure(serial);
-            let output_transform = state
-                .outputs
-                .get(output_id)
-                .map(|output| output.transform.to_wayland());
-            let configured_size = state
-                .windows
-                .get(output_id)
-                .map(|window| (window.configured_width, window.configured_height));
-
-            let zoom_setup = if state.config.initial_zoom > 0.0 {
-                let zoom_pixels = state
-                    .outputs
-                    .get(output_id)
-                    .map(|output| output.geometry.height as f64 * state.config.initial_zoom)
-                    .unwrap_or(0.0);
-                let logical_size = Size {
-                    width: state
-                        .outputs
-                        .get(output_id)
-                        .map(|output| {
-                            if output.logical_geometry.width > 0 {
-                                output.logical_geometry.width as f64
-                            } else {
-                                output.geometry.width as f64
-                            }
-                        })
-                        .unwrap_or_default(),
-                    height: state
-                        .outputs
-                        .get(output_id)
-                        .map(|output| {
-                            if output.logical_geometry.height > 0 {
-                                output.logical_geometry.height as f64
-                            } else {
-                                output.geometry.height as f64
-                            }
-                        })
-                        .unwrap_or_default(),
-                };
-                let buffer_size = state
-                    .outputs
-                    .get(output_id)
-                    .and_then(|output| output.buffer.as_ref())
-                    .map(|buffer| Size {
-                        width: buffer.width as f64,
-                        height: buffer.height as f64,
-                    })
-                    .unwrap_or_default();
-                Some((zoom_pixels, logical_size, buffer_size))
-            } else {
-                None
-            };
-
-            let Some(window) = state.windows.get_mut(output_id) else {
-                return;
-            };
-            window.is_configured = true;
-            if let Some(transform) = output_transform {
-                window.surface.set_buffer_transform(transform);
-            }
-            if let Some((configured_width, configured_height)) = configured_size {
-                if configured_width != 0 && configured_height != 0 {
-                    window
-                        .viewport
-                        .set_destination(configured_width, configured_height);
-                }
-            }
-            if let Some((zoom_pixels, logical_size, buffer_size)) =
-                zoom_setup.filter(|_| !window.initial_zoom_applied)
-            {
-                apply_zoom(
-                    &mut window.view_source,
-                    zoom_pixels,
-                    crate::zoom::screen_center(logical_size),
-                    logical_size,
-                    buffer_size,
-                );
-                window.initial_zoom_applied = true;
-            }
-            attach_output_buffer(state, *output_id);
-            render_window(state, *output_id);
-        }
-    }
-}
-
-impl Dispatch<xdg_toplevel::XdgToplevel, u32> for AppState {
-    fn event(
-        state: &mut Self,
-        _: &xdg_toplevel::XdgToplevel,
-        event: xdg_toplevel::Event,
+        layer_surface: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
         output_id: &u32,
         _: &wayland_client::Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { width, height, .. } => {
+            zwlr_layer_surface_v1::Event::Configure {
+                serial,
+                width,
+                height,
+            } => {
+                tracing::info!(
+                    output_id = *output_id,
+                    serial,
+                    width,
+                    height,
+                    "received layer_surface configure"
+                );
+
                 if let Some(window) = state.windows.get_mut(output_id) {
-                    window.configured_width = width;
-                    window.configured_height = height;
+                    window.configured_width = width as i32;
+                    window.configured_height = height as i32;
                 }
+
+                layer_surface.ack_configure(serial);
+
+                let output_transform = state
+                    .outputs
+                    .get(output_id)
+                    .map(|output| output.transform.to_wayland());
+
+                let zoom_setup = if state.config.initial_zoom > 0.0 {
+                    let zoom_pixels = state
+                        .outputs
+                        .get(output_id)
+                        .map(|output| output.geometry.height as f64 * state.config.initial_zoom)
+                        .unwrap_or(0.0);
+                    let logical_size = Size {
+                        width: state
+                            .outputs
+                            .get(output_id)
+                            .map(|output| {
+                                if output.logical_geometry.width > 0 {
+                                    output.logical_geometry.width as f64
+                                } else {
+                                    output.geometry.width as f64
+                                }
+                            })
+                            .unwrap_or_default(),
+                        height: state
+                            .outputs
+                            .get(output_id)
+                            .map(|output| {
+                                if output.logical_geometry.height > 0 {
+                                    output.logical_geometry.height as f64
+                                } else {
+                                    output.geometry.height as f64
+                                }
+                            })
+                            .unwrap_or_default(),
+                    };
+                    let buffer_size = state
+                        .outputs
+                        .get(output_id)
+                        .and_then(|output| output.buffer.as_ref())
+                        .map(|buffer| Size {
+                            width: buffer.width as f64,
+                            height: buffer.height as f64,
+                        })
+                        .unwrap_or_default();
+                    Some((zoom_pixels, logical_size, buffer_size))
+                } else {
+                    None
+                };
+
+                let Some(window) = state.windows.get_mut(output_id) else {
+                    return;
+                };
+                window.is_configured = true;
+                if let Some(transform) = output_transform {
+                    window.surface.set_buffer_transform(transform);
+                }
+                if width != 0 && height != 0 {
+                    window.viewport.set_destination(width as i32, height as i32);
+                }
+                if let Some((zoom_pixels, logical_size, buffer_size)) =
+                    zoom_setup.filter(|_| !window.initial_zoom_applied)
+                {
+                    apply_zoom(
+                        &mut window.view_source,
+                        zoom_pixels,
+                        crate::zoom::screen_center(logical_size),
+                        logical_size,
+                        buffer_size,
+                    );
+                    window.initial_zoom_applied = true;
+                }
+                attach_output_buffer(state, *output_id);
+                render_window(state, *output_id);
             }
-            xdg_toplevel::Event::Close => {
+            zwlr_layer_surface_v1::Event::Closed => {
                 tracing::info!(output_id = *output_id, "received compositor close request");
                 if let Some(loop_signal) = &state.loop_signal {
                     loop_signal.stop();

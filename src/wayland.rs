@@ -6,12 +6,12 @@ use wayland_client::{
 };
 use wayland_protocols::{
     wp::viewporter::client::wp_viewporter,
-    xdg::{
-        shell::client::xdg_wm_base,
-        xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1},
-    },
+    xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1},
 };
-use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1;
+use wayland_protocols_wlr::{
+    layer_shell::v1::client::zwlr_layer_shell_v1,
+    screencopy::v1::client::zwlr_screencopy_manager_v1,
+};
 
 use crate::{
     config::Config,
@@ -170,9 +170,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         );
                     state.globals.screencopy_manager = Some(manager);
                 }
-                "xdg_wm_base" => {
-                    let shell = registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 1, qh, ());
-                    state.globals.shell = Some(shell);
+                "zwlr_layer_shell_v1" => {
+                    let layer_shell =
+                        registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
+                            name,
+                            cmp::min(version, 4),
+                            qh,
+                            (),
+                        );
+                    state.globals.layer_shell = Some(layer_shell);
                 }
                 "wp_viewporter" => {
                     let viewporter =
@@ -266,22 +272,8 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for AppState {
     }
 }
 
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for AppState {
-    fn event(
-        _: &mut Self,
-        wm_base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
-
 delegate_noop!(AppState: ignore wl_compositor::WlCompositor);
+delegate_noop!(AppState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(AppState: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(AppState: ignore wl_shm::WlShm);
 delegate_noop!(AppState: ignore wp_viewporter::WpViewporter);
