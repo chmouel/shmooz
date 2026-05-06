@@ -95,6 +95,21 @@ jobs:
             shmooz-x86_64-unknown-linux-gnu
             shmooz-aarch64-unknown-linux-gnu
 
+  update-release-notes:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ./scripts/generate-release-notes.sh
+
   aur:
     needs: release
     runs-on: ubuntu-latest
