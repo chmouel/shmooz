@@ -54,26 +54,6 @@ pub fn begin_output_capture(state: &mut AppState, output_id: u32) -> Result<()> 
     Ok(())
 }
 
-pub fn live_timer_tick(state: &mut AppState) {
-    let output_ids = state.outputs.keys().copied().collect::<Vec<_>>();
-
-    for output_id in output_ids {
-        let should_refresh = state
-            .outputs
-            .get(&output_id)
-            .map(|output| output.buffer.is_some() && !output.capture_pending)
-            .unwrap_or(false);
-        if !should_refresh {
-            continue;
-        }
-
-        if let Err(err) = begin_output_capture(state, output_id) {
-            state.record_fatal(err);
-            break;
-        }
-    }
-}
-
 impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, u32> for AppState {
     fn event(
         state: &mut Self,
@@ -140,11 +120,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, u32> for AppState
                 frame.copy(&buffer.wl_buffer);
 
                 if let Some(output) = state.outputs.get_mut(output_id) {
-                    if state.config.live_zoom && output.buffer.is_some() {
-                        output.pending_buffer = Some(buffer);
-                    } else {
-                        output.buffer = Some(buffer);
-                    }
+                    output.buffer = Some(buffer);
                 }
             }
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {

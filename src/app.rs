@@ -56,7 +56,6 @@ pub fn run() -> Result<()> {
         EventLoop::try_new().map_err(|err| AppError::event_loop("create event loop", err))?;
     context.state.loop_signal = Some(event_loop.get_signal());
     install_repeat_timer(&event_loop, &context.state)?;
-    install_live_timer(&event_loop, &context.state)?;
 
     WaylandSource::new(context.connection, context.event_queue)
         .insert(event_loop.handle())
@@ -131,25 +130,6 @@ fn install_repeat_timer(event_loop: &EventLoop<'_, AppState>, state: &AppState) 
             TimeoutAction::ToDuration(state.repeat_interval)
         })
         .map_err(|err| AppError::event_loop("insert repeat timer", err))?;
-
-    Ok(())
-}
-
-fn install_live_timer(event_loop: &EventLoop<'_, AppState>, state: &AppState) -> Result<()> {
-    if !state.config.live_zoom {
-        return Ok(());
-    }
-
-    let interval = Duration::from_millis(u64::from(state.config.live_refresh_ms));
-    event_loop
-        .handle()
-        .insert_source(Timer::from_duration(interval), |_, _, state| {
-            capture::live_timer_tick(state);
-            TimeoutAction::ToDuration(Duration::from_millis(u64::from(
-                state.config.live_refresh_ms,
-            )))
-        })
-        .map_err(|err| AppError::event_loop("insert live timer", err))?;
 
     Ok(())
 }

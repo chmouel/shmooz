@@ -56,9 +56,6 @@ pub enum ConfigError {
 
     #[error("invalid zoom percentage: {value} (must be 0-99%)")]
     Zoom { value: String },
-
-    #[error("invalid fps value: {value} (must be > 0)")]
-    Fps { value: String },
 }
 
 impl AppError {

@@ -63,14 +63,4 @@ pub struct Cli {
 
     #[arg(long = "no-indicator", help = "Hide the zoom mode indicator badge")]
     pub no_indicator: bool,
-
-    #[arg(long = "live", help = "Periodically recapture outputs (live mode)")]
-    pub live: bool,
-
-    #[arg(
-        long = "live-fps",
-        value_name = "N",
-        help = "Set live refresh rate in fps (default: 4)"
-    )]
-    pub live_fps: Option<String>,
 }

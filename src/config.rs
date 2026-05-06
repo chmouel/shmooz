@@ -1,8 +1,6 @@
 use crate::{cli::Cli, error::ConfigError};
 
 pub const APP_ID: &str = "com.chmouel.shmooz";
-pub const DEFAULT_LIVE_FPS: u32 = 4;
-pub const DEFAULT_LIVE_REFRESH_MS: u32 = 1000 / DEFAULT_LIVE_FPS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseKey {
@@ -22,8 +20,6 @@ pub struct Config {
     pub invert_scroll: bool,
     pub spotlight: bool,
     pub show_indicator: bool,
-    pub live_zoom: bool,
-    pub live_refresh_ms: u32,
 }
 
 impl TryFrom<Cli> for Config {
@@ -39,14 +35,6 @@ impl TryFrom<Cli> for Config {
             .transpose()?
             .unwrap_or(0.0);
 
-        let live_refresh_ms = cli
-            .live_fps
-            .as_deref()
-            .map(parse_fps)
-            .transpose()?
-            .map(|fps| 1000 / fps)
-            .unwrap_or(DEFAULT_LIVE_REFRESH_MS);
-
         Ok(Self {
             app_id: APP_ID,
             close_key,
@@ -56,8 +44,6 @@ impl TryFrom<Cli> for Config {
             invert_scroll: cli.invert_scroll,
             spotlight: cli.spotlight,
             show_indicator: !cli.no_indicator,
-            live_zoom: cli.live,
-            live_refresh_ms,
         })
     }
 }
@@ -105,23 +91,9 @@ fn parse_zoom(raw: &str) -> Result<f64, ConfigError> {
     Ok(normalized)
 }
 
-fn parse_fps(raw: &str) -> Result<u32, ConfigError> {
-    let fps = raw.parse::<i64>().map_err(|_| ConfigError::Fps {
-        value: raw.to_owned(),
-    })?;
-
-    if fps <= 0 {
-        return Err(ConfigError::Fps {
-            value: raw.to_owned(),
-        });
-    }
-
-    Ok(fps as u32)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{CloseKey, parse_fps, parse_zoom};
+    use super::{CloseKey, parse_zoom};
 
     #[test]
     fn parse_zoom_percent() {
@@ -144,11 +116,5 @@ mod tests {
         assert_eq!(CloseKey::parse("Esc").unwrap(), CloseKey::Escape);
         assert_eq!(CloseKey::parse("q").unwrap(), CloseKey::Q);
         assert_eq!(CloseKey::parse("X").unwrap(), CloseKey::X);
-    }
-
-    #[test]
-    fn parse_fps_requires_positive_value() {
-        assert_eq!(parse_fps("4").unwrap(), 4);
-        assert!(parse_fps("0").is_err());
     }
 }

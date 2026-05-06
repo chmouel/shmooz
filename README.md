@@ -20,8 +20,6 @@ shmooz [options...]
 * `--invert-scroll` - Invert scroll direction
 * `--spotlight` - Dim the screen outside a circle when zoomed
 * `--no-indicator` - Hide the zoom badge
-* `--live` - Periodically refresh the captured content
-* `--live-fps N` - Set the live refresh rate in frames per second
 
 ### Controls
 
@@ -56,8 +54,6 @@ shmooz --mouse-track
 # Enable spotlight from startup
 shmooz --spotlight --zoom-in 25%
 
-# Refresh the captured content a few times per second
-shmooz --live --live-fps 4
 ```
 
 ## Building
