@@ -99,10 +99,7 @@ fn log_summary(summary: &StartupSummary) {
     }
 }
 
-fn wait_for_initial_captures(
-    context: &mut WaylandContext,
-    selected_outputs: &[u32],
-) -> Result<()> {
+fn wait_for_initial_captures(context: &mut WaylandContext, selected_outputs: &[u32]) -> Result<()> {
     while !selected_outputs.iter().all(|output_id| {
         context
             .state

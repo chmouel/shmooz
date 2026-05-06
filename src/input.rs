@@ -469,7 +469,8 @@ fn scroll_scale(state: &AppState, output_id: u32) -> f64 {
         .filter(|width| *width > 0.0)
         .unwrap_or(1.0);
 
-    state.windows
+    state
+        .windows
         .get(&output_id)
         .map(|window| window.view_source.width / geometry_width)
         .unwrap_or(1.0)

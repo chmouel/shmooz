@@ -68,7 +68,7 @@ impl CloseKey {
             "Esc" | "Escape" => Ok(Self::Escape),
             "q" | "Q" => Ok(Self::Q),
             "x" | "X" => Ok(Self::X),
-            _ => Err(ConfigError::InvalidCloseKey {
+            _ => Err(ConfigError::CloseKey {
                 value: raw.to_owned(),
             }),
         }
@@ -90,14 +90,14 @@ fn parse_zoom(raw: &str) -> Result<f64, ConfigError> {
         None => (trimmed, false),
     };
 
-    let parsed = value.parse::<f64>().map_err(|_| ConfigError::InvalidZoom {
+    let parsed = value.parse::<f64>().map_err(|_| ConfigError::Zoom {
         value: raw.to_owned(),
     })?;
 
     let normalized = if is_percent { parsed / 100.0 } else { parsed };
 
     if !(0.0..1.0).contains(&normalized) {
-        return Err(ConfigError::InvalidZoom {
+        return Err(ConfigError::Zoom {
             value: raw.to_owned(),
         });
     }
@@ -106,12 +106,12 @@ fn parse_zoom(raw: &str) -> Result<f64, ConfigError> {
 }
 
 fn parse_fps(raw: &str) -> Result<u32, ConfigError> {
-    let fps = raw.parse::<i64>().map_err(|_| ConfigError::InvalidFps {
+    let fps = raw.parse::<i64>().map_err(|_| ConfigError::Fps {
         value: raw.to_owned(),
     })?;
 
     if fps <= 0 {
-        return Err(ConfigError::InvalidFps {
+        return Err(ConfigError::Fps {
             value: raw.to_owned(),
         });
     }

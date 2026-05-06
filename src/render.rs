@@ -4,6 +4,7 @@ const ZOOM_BADGE_ICON_SIZE: usize = 34;
 const ZOOM_BADGE_ICON_STROKE: usize = 4;
 const ZOOM_BADGE_FONT_SCALE: usize = 4;
 
+#[allow(clippy::too_many_arguments)]
 pub fn fill_rect(
     pixels: &mut [u8],
     width: usize,
@@ -14,9 +15,19 @@ pub fn fill_rect(
     rect_height: usize,
     color: u32,
 ) {
-    fill_rect_pixels(pixels_u32(pixels), width, height, x, y, rect_width, rect_height, color);
+    fill_rect_pixels(
+        pixels_u32(pixels),
+        width,
+        height,
+        x,
+        y,
+        rect_width,
+        rect_height,
+        color,
+    );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_rect_pixels(
     pixels: &mut [u32],
     width: usize,
@@ -46,7 +57,7 @@ pub fn draw_spotlight_overlay(
     radius: f64,
 ) {
     let pixels = pixels_u32(pixels);
-    let radius_sq = (radius * radius) as f64;
+    let radius_sq = radius * radius;
     let center_x = center_x.min(width.saturating_sub(1)) as i32;
     let center_y = center_y.min(height.saturating_sub(1)) as i32;
 
@@ -110,7 +121,16 @@ fn draw_zoom_badge_icon(pixels: &mut [u8], width: usize, height: usize, x: usize
     }
 
     for offset in 0..12 {
-        fill_rect_pixels(pixels, width, height, x + 22 + offset, y + 24 + offset, 5, 10, handle);
+        fill_rect_pixels(
+            pixels,
+            width,
+            height,
+            x + 22 + offset,
+            y + 24 + offset,
+            5,
+            10,
+            handle,
+        );
     }
 }
 

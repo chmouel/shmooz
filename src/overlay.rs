@@ -1,4 +1,7 @@
-use wayland_client::{QueueHandle, delegate_noop, protocol::{wl_region, wl_shm, wl_subsurface, wl_surface}};
+use wayland_client::{
+    QueueHandle, delegate_noop,
+    protocol::{wl_region, wl_shm, wl_subsurface, wl_surface},
+};
 
 use crate::{
     error::{AppError, Result},
@@ -105,7 +108,8 @@ fn create_spotlight_overlay(
         size.0 * 4,
     )?;
     let surface = compositor.create_surface(qh, ());
-    let subsurface = subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
+    let subsurface =
+        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
     make_surface_input_transparent(&compositor, &surface, qh);
     subsurface.set_position(0, 0);
     subsurface.set_desync();
@@ -159,7 +163,8 @@ fn create_zoom_badge_overlay(
     );
 
     let surface = compositor.create_surface(qh, ());
-    let subsurface = subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
+    let subsurface =
+        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
     make_surface_input_transparent(&compositor, &surface, qh);
     subsurface.set_position(ZOOM_BADGE_MARGIN, ZOOM_BADGE_MARGIN);
     subsurface.set_desync();
@@ -229,7 +234,9 @@ fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
     let should_show = state
         .windows
         .get(&output_id)
-        .map(|window| window.overlay_surface.is_some() && window::is_zoomed(window) && state.spotlight_enabled)
+        .map(|window| {
+            window.overlay_surface.is_some() && window::is_zoomed(window) && state.spotlight_enabled
+        })
         .unwrap_or(false);
 
     set_spotlight_overlay_visible(state, output_id, should_show);
@@ -307,7 +314,8 @@ fn set_zoom_badge_visible(state: &mut AppState, output_id: u32, show: bool) {
 }
 
 fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
-    state.outputs
+    state
+        .outputs
         .get(&output_id)
         .map(|output| {
             let width = if output.logical_geometry.width > 0 {
@@ -326,10 +334,13 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
 }
 
 fn window_surface(state: &AppState, output_id: u32) -> Result<wl_surface::WlSurface> {
-    state.windows
+    state
+        .windows
         .get(&output_id)
         .map(|window| window.surface.clone())
-        .ok_or_else(|| AppError::runtime(format!("window {output_id} is not available for overlays")))
+        .ok_or_else(|| {
+            AppError::runtime(format!("window {output_id} is not available for overlays"))
+        })
 }
 
 delegate_noop!(AppState: ignore wl_region::WlRegion);

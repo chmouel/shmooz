@@ -52,13 +52,13 @@ pub enum AppError {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ConfigError {
     #[error("invalid key name: {value} (supported: Esc, q, x)")]
-    InvalidCloseKey { value: String },
+    CloseKey { value: String },
 
     #[error("invalid zoom percentage: {value} (must be 0-99%)")]
-    InvalidZoom { value: String },
+    Zoom { value: String },
 
     #[error("invalid fps value: {value} (must be > 0)")]
-    InvalidFps { value: String },
+    Fps { value: String },
 }
 
 impl AppError {

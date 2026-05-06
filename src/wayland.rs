@@ -171,13 +171,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.globals.screencopy_manager = Some(manager);
                 }
                 "zwlr_layer_shell_v1" => {
-                    let layer_shell =
-                        registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
-                            name,
-                            cmp::min(version, 4),
-                            qh,
-                            (),
-                        );
+                    let layer_shell = registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(
+                        name,
+                        cmp::min(version, 4),
+                        qh,
+                        (),
+                    );
                     state.globals.layer_shell = Some(layer_shell);
                 }
                 "wp_viewporter" => {
@@ -225,10 +224,8 @@ impl Dispatch<wl_output::WlOutput, u32> for AppState {
                 width,
                 height,
                 ..
-            } => {
-                if is_current_mode(flags) {
-                    output.update_current_mode(width, height);
-                }
+            } if is_current_mode(flags) => {
+                output.update_current_mode(width, height);
             }
             wl_output::Event::Scale { factor } => {
                 output.scale = factor;

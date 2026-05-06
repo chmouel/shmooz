@@ -3,9 +3,7 @@ use wayland_client::{
     protocol::{wl_subsurface, wl_surface},
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport;
-use wayland_protocols_wlr::layer_shell::v1::client::{
-    zwlr_layer_shell_v1, zwlr_layer_surface_v1,
-};
+use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::{
     error::{AppError, Result},
@@ -128,9 +126,8 @@ pub fn create_window_for_output(
     );
     layer_surface.set_size(0, 0);
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_keyboard_interactivity(
-        zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive,
-    );
+    layer_surface
+        .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::Exclusive);
 
     tracing::info!(output_id, "creating layer shell overlay window");
 

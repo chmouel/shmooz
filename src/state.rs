@@ -4,13 +4,10 @@ use std::time::{Duration, Instant};
 use calloop::LoopSignal;
 use wayland_client::{
     QueueHandle,
-    protocol::{
-    wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_subcompositor,
-    },
+    protocol::{wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_subcompositor},
 };
 use wayland_protocols::{
-    wp::viewporter::client::wp_viewporter,
-    xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
+    wp::viewporter::client::wp_viewporter, xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
 };
 use wayland_protocols_wlr::{
     layer_shell::v1::client::zwlr_layer_shell_v1,
