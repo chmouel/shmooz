@@ -55,9 +55,7 @@ jobs:
       - uses: actions/download-artifact@v4
 
       - name: Prepare binaries
-        run: |
-          mv shmooz-x86_64-unknown-linux-gnu/shmooz shmooz-x86_64-unknown-linux-gnu
-          chmod +x shmooz-x86_64-unknown-linux-gnu
+        run: chmod +x shmooz-x86_64-unknown-linux-gnu/shmooz
 
       - name: Generate changelog
         id: changelog
@@ -79,7 +77,7 @@ jobs:
         with:
           body: ${{ steps.changelog.outputs.body }}
           files: |
-            shmooz-x86_64-unknown-linux-gnu
+            shmooz-x86_64-unknown-linux-gnu/shmooz
 
   update-release-notes:
     needs: release
