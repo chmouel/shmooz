@@ -15,8 +15,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             artifact: shmooz-x86_64-unknown-linux-gnu
-          - target: aarch64-unknown-linux-gnu
-            artifact: shmooz-aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -32,16 +30,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-            # Install aarch64 wayland dev libs
-            sudo dpkg --add-architecture arm64
-            sudo sed -i -E 's/^deb ([^\[])/deb [arch=amd64] \1/' /etc/apt/sources.list.d/*.list || true
-            echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs) main universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-            echo "deb [arch=arm64] http://ports.ubuntu.com/ $(lsb_release -cs)-updates main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-            sudo apt-get update
-            sudo apt-get install -y libwayland-dev:arm64
-          fi
 
       - name: Build
         env:
@@ -69,8 +57,7 @@ jobs:
       - name: Prepare binaries
         run: |
           mv shmooz-x86_64-unknown-linux-gnu/shmooz shmooz-x86_64-unknown-linux-gnu
-          mv shmooz-aarch64-unknown-linux-gnu/shmooz shmooz-aarch64-unknown-linux-gnu
-          chmod +x shmooz-x86_64-unknown-linux-gnu shmooz-aarch64-unknown-linux-gnu
+          chmod +x shmooz-x86_64-unknown-linux-gnu
 
       - name: Generate changelog
         id: changelog
@@ -93,7 +80,6 @@ jobs:
           body: ${{ steps.changelog.outputs.body }}
           files: |
             shmooz-x86_64-unknown-linux-gnu
-            shmooz-aarch64-unknown-linux-gnu
 
   update-release-notes:
     needs: release
@@ -148,7 +134,7 @@ jobs:
           pkgver=${{ steps.version.outputs.version }}
           pkgrel=1
           pkgdesc="A zoom / magnifier utility for Wayland compositors"
-          arch=('x86_64' 'aarch64')
+          arch=('x86_64')
           url="https://github.com/${{ github.repository }}"
           license=('Apache-2.0')
           depends=('wayland')
