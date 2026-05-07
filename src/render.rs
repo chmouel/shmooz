@@ -132,9 +132,7 @@ pub fn draw_annotation_overlay(
     }
 }
 
-pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &BadgeModel) {
-    pixels_u32(pixels).fill(0);
-
+fn paint_badge_background(pixels: &mut [u8], width: usize, height: usize) {
     fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
     fill_rect(pixels, width, height, 0, 0, width, 3, 0xFFFF_C83D);
     fill_rect(
@@ -148,6 +146,12 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
         0xFFFF_C83D,
     );
     fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+}
+
+pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &BadgeModel) {
+    pixels_u32(pixels).fill(0);
+
+    paint_badge_background(pixels, width, height);
     fill_rect(
         pixels,
         width,
@@ -226,22 +230,10 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
     }
 }
 
-pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, message: &str) {
+pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, message: &str) {
     pixels_u32(pixels).fill(0);
 
-    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
-    fill_rect(pixels, width, height, 0, 0, width, 3, 0xFFFF_C83D);
-    fill_rect(
-        pixels,
-        width,
-        height,
-        0,
-        height.saturating_sub(3),
-        width,
-        3,
-        0xFFFF_C83D,
-    );
-    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    paint_badge_background(pixels, width, height);
     fill_rect(
         pixels,
         width,
@@ -259,7 +251,7 @@ pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, message: &str
         height,
         18,
         16,
-        "SCREENSHOT SAVED",
+        title,
         TOAST_TITLE_SCALE,
         0xFFFF_FFFF,
     );
@@ -694,10 +686,11 @@ fn draw_ellipse(
     let ry = ((bottom - top) / 2.0).max(1.0);
     let cx = left + rx;
     let cy = top + ry;
-    let steps = ((rx + ry) * 3.0).round() as i32;
+    let step_count = ((rx + ry) * 3.0).round() as i32;
+    let step_count = step_count.max(24);
 
-    for step in 0..=steps.max(24) {
-        let theta = std::f64::consts::TAU * step as f64 / steps.max(24) as f64;
+    for step in 0..=step_count {
+        let theta = std::f64::consts::TAU * step as f64 / step_count as f64;
         let x = cx + rx * theta.cos();
         let y = cy + ry * theta.sin();
         draw_disc(
@@ -744,7 +737,7 @@ fn blend_pixel(pixels: &mut [u32], width: usize, height: usize, x: i32, y: i32, 
     pixels[index] = alpha_over(pixels[index], color);
 }
 
-fn alpha_over(dst: u32, src: u32) -> u32 {
+pub(crate) fn alpha_over(dst: u32, src: u32) -> u32 {
     let src_a = (src >> 24) & 0xFF;
     if src_a == 0 {
         return dst;
@@ -1095,7 +1088,13 @@ mod tests {
     fn toast_renders_notification_text() {
         let mut pixels = vec![0_u8; 320 * 32 * 4];
 
-        paint_toast(&mut pixels, 320, 32, "File saved to shot.png");
+        paint_toast(
+            &mut pixels,
+            320,
+            32,
+            "SCREENSHOT SAVED",
+            "File saved to shot.png",
+        );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }

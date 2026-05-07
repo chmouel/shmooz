@@ -273,7 +273,13 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
         window.pointer_y = y;
     }
 
-    overlay::refresh_annotation_overlay(state, output_id);
+    if state
+        .windows
+        .get(&output_id)
+        .is_some_and(|w| w.annotation_visible)
+    {
+        overlay::refresh_annotation_overlay(state, output_id);
+    }
     overlay::refresh_spotlight_for_motion(state, output_id, delta_x, delta_y);
 }
 
@@ -445,16 +451,23 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
 }
 
 fn handle_key_action(state: &mut AppState, key: u32) {
+    match key {
+        KEY_LEFTBRACE => {
+            adjust_spotlight_radius(state, -0.05);
+            return;
+        }
+        KEY_RIGHTBRACE => {
+            adjust_spotlight_radius(state, 0.05);
+            return;
+        }
+        _ => {}
+    }
+
     let Some(output_id) = state.focused_window else {
         return;
     };
 
     if state.interaction_mode.is_annotating() {
-        match key {
-            KEY_LEFTBRACE => adjust_spotlight_radius(state, -0.05),
-            KEY_RIGHTBRACE => adjust_spotlight_radius(state, 0.05),
-            _ => {}
-        }
         return;
     }
 
@@ -469,8 +482,6 @@ fn handle_key_action(state: &mut AppState, key: u32) {
         KEY_RIGHT => pan_focused_window(state, output_id, KEYBOARD_PAN_STEP, 0.0),
         KEY_UP => pan_focused_window(state, output_id, 0.0, -KEYBOARD_PAN_STEP),
         KEY_DOWN => pan_focused_window(state, output_id, 0.0, KEYBOARD_PAN_STEP),
-        KEY_LEFTBRACE => adjust_spotlight_radius(state, -0.05),
-        KEY_RIGHTBRACE => adjust_spotlight_radius(state, 0.05),
         _ => {}
     }
 }
@@ -691,15 +702,18 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
         }
         _ => {
             if let Some(text_input) = current_text_input(state, key) {
-                if let Some(window) = state.windows.get_mut(&output_id)
+                let changed = if let Some(window) = state.windows.get_mut(&output_id)
                     && let Some(text) = window.active_text.as_mut()
                     && text.text.chars().count() + text_input.chars().count() <= 64
                 {
                     text.text.push_str(&text_input);
+                    true
+                } else {
+                    false
+                };
+                if changed {
+                    overlay::refresh_annotation_overlay(state, output_id);
                 }
-                overlay::refresh_annotation_overlay(state, output_id);
-            } else {
-                overlay::refresh_annotation_overlay(state, output_id);
             }
         }
     }
@@ -730,14 +744,22 @@ fn undo_annotation(state: &mut AppState) {
     };
 
     if let Some(window) = state.windows.get_mut(&output_id) {
-        if window.active_text.take().is_some() {
-            // Drop the active text draft before touching committed annotations.
-        } else if window.active_annotation.take().is_none() && window.active_move.take().is_none() {
+        if window.active_text.take().is_none()
+            && window.active_annotation.take().is_none()
+            && window.active_move.take().is_none()
+        {
             window.annotations.pop();
         }
         window.pointer_pressed = false;
     }
     overlay::update_annotation_overlays(state);
+}
+
+fn reset_active_state(window: &mut crate::window::WindowState) {
+    window.active_annotation = None;
+    window.active_move = None;
+    window.active_text = None;
+    window.pointer_pressed = false;
 }
 
 fn clear_annotations(state: &mut AppState) {
@@ -747,10 +769,7 @@ fn clear_annotations(state: &mut AppState) {
 
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.annotations.clear();
-        window.active_annotation = None;
-        window.active_move = None;
-        window.active_text = None;
-        window.pointer_pressed = false;
+        reset_active_state(window);
     }
     overlay::update_annotation_overlays(state);
 }
@@ -759,10 +778,7 @@ fn cancel_active_annotations(state: &mut AppState) {
     let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
     for output_id in output_ids {
         if let Some(window) = state.windows.get_mut(&output_id) {
-            window.active_annotation = None;
-            window.active_move = None;
-            window.active_text = None;
-            window.pointer_pressed = false;
+            reset_active_state(window);
         }
         overlay::update_window_overlays(state, output_id);
     }
@@ -777,14 +793,19 @@ fn clear_active_moves(state: &mut AppState) {
 }
 
 fn cancel_active_text_entries(state: &mut AppState, discard_only: bool) {
+    if state.windows.values().all(|w| w.active_text.is_none()) {
+        return;
+    }
     let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        if discard_only {
-            if let Some(window) = state.windows.get_mut(&output_id) {
+    if discard_only {
+        for output_id in &output_ids {
+            if let Some(window) = state.windows.get_mut(output_id) {
                 window.active_text = None;
             }
-            overlay::update_annotation_overlays(state);
-        } else {
+        }
+        overlay::update_annotation_overlays(state);
+    } else {
+        for output_id in output_ids {
             commit_or_discard_active_text_entry(state, output_id);
         }
     }
@@ -866,9 +887,12 @@ fn screenshot_toast_message(path: &Path) -> String {
     format!("{prefix}{shortened}")
 }
 
-fn tail_chars(text: &str, max_chars: usize) -> String {
-    let total = text.chars().count();
-    text.chars().skip(total.saturating_sub(max_chars)).collect()
+fn tail_chars(text: &str, max_chars: usize) -> &str {
+    let skip = text.chars().count().saturating_sub(max_chars);
+    text.char_indices()
+        .nth(skip)
+        .map(|(i, _)| &text[i..])
+        .unwrap_or(text)
 }
 
 fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_change: f64) {

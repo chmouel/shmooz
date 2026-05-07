@@ -241,17 +241,15 @@ fn create_zoom_badge_overlay(
     output_id: u32,
     qh: &QueueHandle<AppState>,
 ) -> Result<()> {
-    if !state.config.show_indicator || state.globals.subcompositor.is_none() {
+    if !state.config.show_indicator {
         return Ok(());
     }
+    let Some(subcompositor) = state.globals.subcompositor.clone() else {
+        return Ok(());
+    };
 
     let compositor = state.globals.compositor()?;
     let shm = state.globals.shm()?;
-    let subcompositor = state
-        .globals
-        .subcompositor
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_subcompositor"))?;
 
     let buffer = ShmBuffer::create(
         &shm,
@@ -283,17 +281,12 @@ fn create_toast_overlay(
     output_id: u32,
     qh: &QueueHandle<AppState>,
 ) -> Result<()> {
-    if state.globals.subcompositor.is_none() {
+    let Some(subcompositor) = state.globals.subcompositor.clone() else {
         return Ok(());
-    }
+    };
 
     let compositor = state.globals.compositor()?;
     let shm = state.globals.shm()?;
-    let subcompositor = state
-        .globals
-        .subcompositor
-        .clone()
-        .ok_or_else(|| AppError::missing_protocol("wl_subcompositor"))?;
 
     let buffer = ShmBuffer::create(
         &shm,
@@ -330,6 +323,48 @@ fn make_surface_input_transparent(
     region.destroy();
 }
 
+type AnnotationRenderInputs = (
+    Vec<AnnotationItem>,
+    Option<ActiveAnnotation>,
+    Option<TextAnnotation>,
+    Option<render::OverlayCursor>,
+);
+
+fn build_annotation_render_inputs(
+    state: &AppState,
+    output_id: u32,
+    width: f64,
+    height: f64,
+) -> Option<AnnotationRenderInputs> {
+    let effective_tool = state.effective_annotation_tool();
+    let show_cursor = cursor_visible_for_output(state, output_id);
+    let window = state.windows.get(&output_id)?;
+    let cursor = show_cursor.then_some(render::OverlayCursor {
+        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
+        style: if effective_tool == crate::state::AnnotationTool::Move {
+            render::CursorStyle::Hand
+        } else {
+            render::CursorStyle::Crosshair
+        },
+    });
+    let projected_annotations =
+        project_annotations(&window.annotations, window.view_source, width, height);
+    let projected_active = window
+        .active_annotation
+        .as_ref()
+        .map(|a| project_active_annotation(a, window.view_source, width, height));
+    let projected_text = window
+        .active_text
+        .as_ref()
+        .map(|t| project_text_annotation(t, window.view_source, width, height));
+    Some((
+        projected_annotations,
+        projected_active,
+        projected_text,
+        cursor,
+    ))
+}
+
 fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     let qh = match state.queue_handle.clone() {
         Some(qh) => qh,
@@ -339,51 +374,40 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     if width <= 0 || height <= 0 {
         return;
     }
-    let effective_tool = state.effective_annotation_tool();
-    let show_cursor = cursor_visible_for_output(state, output_id);
+
+    let ready = state.windows.get(&output_id).is_some_and(|w| {
+        w.annotation_visible && w.annotation_frame_callback.is_none() && w.annotation_redraw_pending
+    });
+    if !ready {
+        return;
+    }
+
+    let surface = state
+        .windows
+        .get(&output_id)
+        .and_then(|w| w.annotation_surface.as_ref().cloned());
+    let Some(surface) = surface else {
+        return;
+    };
+
+    let slot_index = state
+        .windows
+        .get(&output_id)
+        .and_then(|w| w.annotation_buffers.iter().position(|s| !s.busy));
+    let Some(slot_index) = slot_index else {
+        return;
+    };
+
+    let Some((projected_annotations, projected_active, projected_text, cursor)) =
+        build_annotation_render_inputs(state, output_id, width as f64, height as f64)
+    else {
+        return;
+    };
 
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
     };
-    if !window.annotation_visible
-        || window.annotation_frame_callback.is_some()
-        || !window.annotation_redraw_pending
-    {
-        return;
-    }
-
-    let Some(surface) = window.annotation_surface.as_ref().cloned() else {
-        return;
-    };
-    let Some((slot_index, slot)) = window
-        .annotation_buffers
-        .iter_mut()
-        .enumerate()
-        .find(|(_, slot)| !slot.busy)
-    else {
-        return;
-    };
-    let cursor = show_cursor.then_some(render::OverlayCursor {
-        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
-        style: if effective_tool == crate::state::AnnotationTool::Move {
-            render::CursorStyle::Hand
-        } else {
-            render::CursorStyle::Crosshair
-        },
-    });
-    let projected_annotations = project_annotations(
-        &window.annotations,
-        window.view_source,
-        width as f64,
-        height as f64,
-    );
-    let projected_active = window.active_annotation.as_ref().map(|annotation| {
-        project_active_annotation(annotation, window.view_source, width as f64, height as f64)
-    });
-    let projected_text = window
-        .active_text
-        .as_ref()
-        .map(|text| project_text_annotation(text, window.view_source, width as f64, height as f64));
+    let slot = &mut window.annotation_buffers[slot_index];
 
     render::draw_annotation_overlay(
         slot.buffer.data.as_mut(),
@@ -484,6 +508,7 @@ fn refresh_toast_overlay(state: &mut AppState, output_id: u32) {
         buffer.data.as_mut(),
         TOAST_WIDTH as usize,
         TOAST_HEIGHT as usize,
+        "SCREENSHOT SAVED",
         &message,
     );
     surface.attach(Some(&buffer.wl_buffer), 0, 0);
@@ -591,10 +616,8 @@ fn set_spotlight_overlay_visible(state: &mut AppState, output_id: u32, show: boo
     if show {
         refresh_spotlight_overlay(state, output_id);
     } else {
-        surface.attach(None, 0, 0);
         let (width, height) = logical_size(state, output_id);
-        surface.damage(0, 0, width, height);
-        surface.commit();
+        commit_surface_hide(&surface, width, height);
     }
 }
 
@@ -624,10 +647,8 @@ fn set_annotation_overlay_visible(state: &mut AppState, output_id: u32, show: bo
     }
 
     if !show {
-        surface.attach(None, 0, 0);
         let (width, height) = logical_size(state, output_id);
-        surface.damage(0, 0, width, height);
-        surface.commit();
+        commit_surface_hide(&surface, width, height);
     }
 }
 
@@ -653,9 +674,7 @@ fn set_zoom_badge_visible(state: &mut AppState, output_id: u32, show: bool) {
     }
 
     if !show {
-        surface.attach(None, 0, 0);
-        surface.damage(0, 0, ZOOM_BADGE_WIDTH, ZOOM_BADGE_HEIGHT);
-        surface.commit();
+        commit_surface_hide(&surface, ZOOM_BADGE_WIDTH, ZOOM_BADGE_HEIGHT);
     }
 }
 
@@ -682,9 +701,7 @@ fn set_toast_visible(state: &mut AppState, output_id: u32, show: bool) {
     if show {
         refresh_toast_overlay(state, output_id);
     } else {
-        surface.attach(None, 0, 0);
-        surface.damage(0, 0, TOAST_WIDTH, TOAST_HEIGHT);
-        surface.commit();
+        commit_surface_hide(&surface, TOAST_WIDTH, TOAST_HEIGHT);
     }
 }
 
@@ -694,6 +711,12 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
         .get(&output_id)
         .map(|output| output.logical_size())
         .unwrap_or((0, 0))
+}
+
+fn commit_surface_hide(surface: &wl_surface::WlSurface, width: i32, height: i32) {
+    surface.attach(None, 0, 0);
+    surface.damage(0, 0, width, height);
+    surface.commit();
 }
 
 fn position_toast_subsurface(state: &AppState, output_id: u32) {
@@ -718,35 +741,12 @@ pub fn draw_annotation_overlay_snapshot(
     width: usize,
     height: usize,
 ) {
-    let effective_tool = state.effective_annotation_tool();
-    let show_cursor = cursor_visible_for_output(state, output_id);
-
-    let Some(window) = state.windows.get(&output_id) else {
+    let Some((projected_annotations, projected_active, projected_text, cursor)) =
+        build_annotation_render_inputs(state, output_id, width as f64, height as f64)
+    else {
         pixels.fill(0);
         return;
     };
-
-    let cursor = show_cursor.then_some(render::OverlayCursor {
-        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
-        style: if effective_tool == crate::state::AnnotationTool::Move {
-            render::CursorStyle::Hand
-        } else {
-            render::CursorStyle::Crosshair
-        },
-    });
-    let projected_annotations = project_annotations(
-        &window.annotations,
-        window.view_source,
-        width as f64,
-        height as f64,
-    );
-    let projected_active = window.active_annotation.as_ref().map(|annotation| {
-        project_active_annotation(annotation, window.view_source, width as f64, height as f64)
-    });
-    let projected_text = window
-        .active_text
-        .as_ref()
-        .map(|text| project_text_annotation(text, window.view_source, width as f64, height as f64));
 
     render::draw_annotation_overlay(
         pixels,

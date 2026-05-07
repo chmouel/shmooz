@@ -147,14 +147,13 @@ fn render_view(
         return;
     }
 
+    let x_scale = view_source.width / destination_width as f64;
+    let y_scale = view_source.height / destination_height as f64;
+
     for y in 0..destination_height {
-        let source_y = view_source.y
-            + ((y as f64 + 0.5) * view_source.height / destination_height as f64)
-            - 0.5;
+        let source_y = view_source.y + (y as f64 + 0.5) * y_scale - 0.5;
         for x in 0..destination_width {
-            let source_x = view_source.x
-                + ((x as f64 + 0.5) * view_source.width / destination_width as f64)
-                - 0.5;
+            let source_x = view_source.x + (x as f64 + 0.5) * x_scale - 0.5;
             destination[y * destination_width + x] = sample_bilinear(&source, source_x, source_y);
         }
     }
@@ -197,7 +196,7 @@ fn blend_samples(left: u32, right: u32, amount: f64) -> u32 {
 
 fn blend_full_frame(destination: &mut [u32], overlay: &[u32]) {
     for (destination_pixel, overlay_pixel) in destination.iter_mut().zip(overlay.iter().copied()) {
-        *destination_pixel = blend_pixel(*destination_pixel, overlay_pixel);
+        *destination_pixel = render::alpha_over(*destination_pixel, overlay_pixel);
     }
 }
 
@@ -224,37 +223,12 @@ fn blend_region(
 
             let destination_index = destination_y * destination_width + destination_x;
             let overlay_index = y * overlay.width + x;
-            destination[destination_index] = blend_pixel(
+            destination[destination_index] = render::alpha_over(
                 destination[destination_index],
                 overlay.pixels[overlay_index],
             );
         }
     }
-}
-
-fn blend_pixel(destination: u32, overlay: u32) -> u32 {
-    let source_alpha = (overlay >> 24) & 0xFF;
-    if source_alpha == 0 {
-        return destination;
-    }
-
-    let inverse_alpha = 255 - source_alpha;
-    let destination_alpha = (destination >> 24) & 0xFF;
-
-    let source_red = (overlay >> 16) & 0xFF;
-    let source_green = (overlay >> 8) & 0xFF;
-    let source_blue = overlay & 0xFF;
-
-    let destination_red = (destination >> 16) & 0xFF;
-    let destination_green = (destination >> 8) & 0xFF;
-    let destination_blue = destination & 0xFF;
-
-    let out_alpha = source_alpha + ((destination_alpha * inverse_alpha + 127) / 255);
-    let out_red = source_red + ((destination_red * inverse_alpha + 127) / 255);
-    let out_green = source_green + ((destination_green * inverse_alpha + 127) / 255);
-    let out_blue = source_blue + ((destination_blue * inverse_alpha + 127) / 255);
-
-    (out_alpha << 24) | (out_red << 16) | (out_green << 8) | out_blue
 }
 
 fn write_png(directory: &Path, pixels: &[u32], width: usize, height: usize) -> Result<PathBuf> {
@@ -306,26 +280,28 @@ fn create_output_file(directory: &Path) -> Result<(std::fs::File, PathBuf)> {
 
 fn rgba_bytes(pixels: &[u32]) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        rgba.push(((pixel >> 16) & 0xFF) as u8);
-        rgba.push(((pixel >> 8) & 0xFF) as u8);
-        rgba.push((pixel & 0xFF) as u8);
-        rgba.push(((pixel >> 24) & 0xFF) as u8);
+    for &pixel in pixels {
+        rgba.extend_from_slice(&[
+            ((pixel >> 16) & 0xFF) as u8,
+            ((pixel >> 8) & 0xFF) as u8,
+            (pixel & 0xFF) as u8,
+            ((pixel >> 24) & 0xFF) as u8,
+        ]);
     }
     rgba
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceFrame, blend_pixel, render_view};
-    use crate::zoom::ViewRect;
+    use super::{SourceFrame, render_view};
+    use crate::{render, zoom::ViewRect};
 
     #[test]
     fn blend_pixel_composites_premultiplied_overlay() {
         let destination = 0xFF20_3040;
         let overlay = 0x8080_0000;
 
-        assert_eq!(blend_pixel(destination, overlay), 0xFF90_1820);
+        assert_eq!(render::alpha_over(destination, overlay), 0xFF90_1820);
     }
 
     #[test]
