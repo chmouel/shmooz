@@ -65,6 +65,14 @@ impl CloseKey {
             Self::X => 45,
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Escape => "Esc",
+            Self::Q => "Q",
+            Self::X => "X",
+        }
+    }
 }
 
 fn parse_zoom(raw: &str) -> Result<f64, ConfigError> {

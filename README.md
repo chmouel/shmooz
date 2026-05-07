@@ -67,11 +67,11 @@ shmooz [options...]
 * `l` - Select line
 * `r` - Select rectangle
 * `e` - Select ellipse
-* `Enter` - Commit the current text annotation
+* `Enter` - Commit the current text annotation and stay in text mode
 * `Backspace` - Delete the last typed text character
 * `u` - Undo the last annotation on the focused output
 * `c` - Clear annotations on the focused output
-* `Esc` - Leave the active text/move modifier first, then leave annotation mode, or exit by default when navigating
+* `Esc` - Leave the active text/move modifier first, then leave annotation mode, or close by default when navigating
 
 ### Annotation behavior
 

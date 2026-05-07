@@ -1022,7 +1022,7 @@ mod tests {
                 lines: [
                     BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
                     BadgeLine::new("TOOL", "P/H paint  L/R/E shape", 0xFFF4_F4F4),
-                    BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc done", 0xFFF4_F4F4),
+                    BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc back", 0xFFF4_F4F4),
                 ],
             },
         );

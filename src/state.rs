@@ -16,7 +16,7 @@ use wayland_protocols_wlr::{
 use xkbcommon::xkb;
 
 use crate::{
-    config::Config,
+    config::{CloseKey, Config},
     error::{AppError, Result},
     output::{OutputState, output_matches_filter},
     window::WindowState,
@@ -35,7 +35,7 @@ impl InteractionMode {
         !matches!(self, Self::Navigate)
     }
 
-    pub fn badge(self, tool: AnnotationTool) -> BadgeModel {
+    pub fn badge(self, tool: AnnotationTool, close_key: Option<CloseKey>) -> BadgeModel {
         match self {
             Self::Navigate => BadgeModel {
                 title: "NAVIGATE".to_owned(),
@@ -43,7 +43,14 @@ impl InteractionMode {
                 lines: [
                     BadgeLine::new("MODE", "D draw  W draw no zoom", 0xFFFF_C83D),
                     BadgeLine::new("VIEW", "+/- zoom  arrows pan  0 reset", 0xFFF4_F4F4),
-                    BadgeLine::new("OTHER", "S spot  [ ] radius  Esc close", 0xFFF4_F4F4),
+                    BadgeLine::new(
+                        "OTHER",
+                        format!(
+                            "S spot  [ ] radius  {} close",
+                            close_key.map(CloseKey::label).unwrap_or("Esc")
+                        ),
+                        0xFFF4_F4F4,
+                    ),
                 ],
             },
             Self::AnnotateZoomed | Self::AnnotateUnzoomed => match tool {
@@ -53,7 +60,7 @@ impl InteractionMode {
                     lines: [
                         BadgeLine::new("DRAG", "Drag existing annotation", 0xFFFF_C83D),
                         BadgeLine::new("NEXT", "P/H/L/R/E draw  T text", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "U undo  C clear  Esc done", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "U undo  C clear  Esc back", 0xFFF4_F4F4),
                     ],
                 },
                 AnnotationTool::Text => BadgeModel {
@@ -62,7 +69,7 @@ impl InteractionMode {
                     lines: [
                         BadgeLine::new("PLACE", "Click to place text", 0xFFFF_C83D),
                         BadgeLine::new("TEXT", "Type  Bksp delete  Enter commit", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "M move  U undo  C clear  Esc done", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "M move  U undo  C clear  Esc back", 0xFFF4_F4F4),
                     ],
                 },
                 _ => BadgeModel {
@@ -71,7 +78,7 @@ impl InteractionMode {
                     lines: [
                         BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
                         BadgeLine::new("TOOL", "P/H paint  L/R/E shape", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc done", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc back", 0xFFF4_F4F4),
                     ],
                 },
             },
@@ -623,7 +630,7 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{APP_ID, Config};
+    use crate::config::{APP_ID, CloseKey, Config};
 
     use super::{
         AnnotationItem, AnnotationPoint, AnnotationShapeKind, AnnotationTool, AppState,
@@ -698,10 +705,17 @@ mod tests {
 
     #[test]
     fn navigate_badge_shows_draw_modes() {
-        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen);
+        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, None);
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
         assert_eq!(badge.lines[2].text, "S spot  [ ] radius  Esc close");
+    }
+
+    #[test]
+    fn navigate_badge_reflects_remapped_close_key() {
+        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, Some(CloseKey::Q));
+
+        assert_eq!(badge.lines[2].text, "S spot  [ ] radius  Q close");
     }
 }

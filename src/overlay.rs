@@ -357,7 +357,9 @@ fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
 
 fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
     let effective_tool = state.effective_annotation_tool();
-    let badge = state.interaction_mode.badge(effective_tool);
+    let badge = state
+        .interaction_mode
+        .badge(effective_tool, state.config.close_key);
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
     };

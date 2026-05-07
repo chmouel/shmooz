@@ -380,13 +380,7 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         return;
     }
 
-    if key == KEY_ESC
-        && state.interaction_mode.is_annotating()
-        && state
-            .config
-            .close_key
-            .is_none_or(|close_key| close_key.key_code() != KEY_ESC)
-    {
+    if key == KEY_ESC && state.interaction_mode.is_annotating() {
         if state.tool_override.is_some() {
             set_tool_override(state, None);
             return;
@@ -988,7 +982,7 @@ fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) 
 mod tests {
     use wayland_client::protocol::wl_keyboard;
 
-    use crate::config::{APP_ID, Config};
+    use crate::config::{APP_ID, CloseKey, Config};
 
     use super::{
         AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_L, KEY_M, KEY_T, handle_key_event,
@@ -1004,6 +998,13 @@ mod tests {
             invert_scroll: false,
             spotlight: false,
             show_indicator: true,
+        }
+    }
+
+    fn test_config_with_close_key(close_key: CloseKey) -> Config {
+        Config {
+            close_key: Some(close_key),
+            ..test_config()
         }
     }
 
@@ -1081,6 +1082,24 @@ mod tests {
             state.effective_annotation_tool(),
             AnnotationTool::Highlighter
         );
+    }
+
+    #[test]
+    fn explicit_escape_close_key_keeps_escape_backing_out_of_annotation() {
+        let mut state = AppState::new(test_config_with_close_key(CloseKey::Escape));
+        state.interaction_mode = InteractionMode::AnnotateZoomed;
+        state.annotation_tool = AnnotationTool::Line;
+        state.tool_override = Some(AnnotationTool::Move);
+
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+
+        assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
+        assert_eq!(state.tool_override, None);
+
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+
+        assert_eq!(state.interaction_mode, InteractionMode::Navigate);
+        assert_eq!(state.tool_override, None);
     }
 
     #[test]

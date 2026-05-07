@@ -24,15 +24,15 @@ Controls:
     l                     Line
     r                     Rectangle
     e                     Ellipse
-    Enter                 Commit active text
+    Enter                 Commit active text and stay in text mode
     Backspace             Delete last text character
     u                     Undo last annotation
     c                     Clear annotations
-    Esc                   Leave active mod, then return to navigation
+    Esc                   Leave active modifier first, then leave annotation mode
 
   Global:
     Right click           Exit
-    Esc                   Exit by default";
+    Esc                   Exit from navigation by default";
 
 #[derive(Debug, Clone, Parser)]
 #[command(
