@@ -56,6 +56,11 @@ impl InteractionMode {
                     "T TEXT  L LINE  R RECT  E ELL",
                     "U UNDO  C CLEAR  ESC BACK",
                 ],
+                AnnotationTool::Text => [
+                    "T EXIT TEXT  P PEN  H HILITE",
+                    "M MOVE  L LINE  R RECT  E ELL",
+                    "U UNDO  C CLEAR  ENTER COMMIT",
+                ],
                 _ => [
                     "P PEN  H HILITE  M MOVE",
                     "T TEXT  L LINE  R RECT  E ELL",
@@ -479,7 +484,7 @@ pub struct AppState {
     pub spotlight_radius_frac: f64,
     pub interaction_mode: InteractionMode,
     pub annotation_tool: AnnotationTool,
-    pub move_mode: bool,
+    pub tool_override: Option<AnnotationTool>,
     pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
@@ -509,7 +514,7 @@ impl AppState {
             spotlight_radius_frac: 0.25,
             interaction_mode: InteractionMode::default(),
             annotation_tool: AnnotationTool::default(),
-            move_mode: false,
+            tool_override: None,
             keyboard_text: None,
             repeat_key: None,
             repeat_deadline: None,
@@ -572,11 +577,7 @@ impl AppState {
     }
 
     pub fn effective_annotation_tool(&self) -> AnnotationTool {
-        if self.move_mode {
-            AnnotationTool::Move
-        } else {
-            self.annotation_tool
-        }
+        self.tool_override.unwrap_or(self.annotation_tool)
     }
 }
 
@@ -650,7 +651,7 @@ mod tests {
         state.annotation_tool = AnnotationTool::Rectangle;
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Rectangle);
 
-        state.move_mode = true;
+        state.tool_override = Some(AnnotationTool::Move);
 
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Move);
         assert_eq!(state.annotation_tool, AnnotationTool::Rectangle);

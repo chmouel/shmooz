@@ -20,7 +20,7 @@ Controls:
     p                     Pen
     h                     Highlighter
     m                     Toggle move mode for existing annotations
-    t                     Text
+    t                     Toggle text mode
     l                     Line
     r                     Rectangle
     e                     Ellipse

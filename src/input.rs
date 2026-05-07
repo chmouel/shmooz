@@ -393,8 +393,8 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
             .close_key
             .is_none_or(|close_key| close_key.key_code() != KEY_ESC)
     {
-        if state.move_mode {
-            set_move_mode(state, false);
+        if state.tool_override.is_some() {
+            set_tool_override(state, None);
             return;
         }
         set_interaction_mode(state, InteractionMode::Navigate);
@@ -416,8 +416,12 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         KEY_W => toggle_annotation_mode(state, InteractionMode::AnnotateUnzoomed),
         KEY_P => select_annotation_tool(state, AnnotationTool::Pen),
         KEY_H => select_annotation_tool(state, AnnotationTool::Highlighter),
-        KEY_M if state.interaction_mode.is_annotating() => toggle_move_mode(state),
-        KEY_T => select_annotation_tool(state, AnnotationTool::Text),
+        KEY_M if state.interaction_mode.is_annotating() => {
+            toggle_tool_override(state, AnnotationTool::Move)
+        }
+        KEY_T if state.interaction_mode.is_annotating() => {
+            toggle_tool_override(state, AnnotationTool::Text)
+        }
         KEY_L => select_annotation_tool(state, AnnotationTool::Line),
         KEY_R => select_annotation_tool(state, AnnotationTool::Rectangle),
         KEY_E => select_annotation_tool(state, AnnotationTool::Ellipse),
@@ -485,7 +489,7 @@ fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
 
     cancel_active_annotations(state);
     if mode == InteractionMode::Navigate {
-        state.move_mode = false;
+        state.tool_override = None;
     }
     state.interaction_mode = mode;
     state.stop_repeat();
@@ -495,35 +499,39 @@ fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
 }
 
 fn select_annotation_tool(state: &mut AppState, tool: AnnotationTool) {
-    if tool == AnnotationTool::Move {
-        set_move_mode(state, true);
+    if matches!(tool, AnnotationTool::Move | AnnotationTool::Text) {
+        set_tool_override(state, Some(tool));
         return;
     }
     if state.annotation_tool != tool {
         cancel_active_text_entries(state, true);
     }
     state.annotation_tool = tool;
-    state.move_mode = false;
-    overlay::refresh_zoom_badge_overlays(state);
-    overlay::update_annotation_overlays(state);
+    set_tool_override(state, None);
 }
 
-fn toggle_move_mode(state: &mut AppState) {
-    set_move_mode(state, !state.move_mode);
+fn toggle_tool_override(state: &mut AppState, tool: AnnotationTool) {
+    let next_override = if state.tool_override == Some(tool) {
+        None
+    } else {
+        Some(tool)
+    };
+    set_tool_override(state, next_override);
 }
 
-fn set_move_mode(state: &mut AppState, enabled: bool) {
-    if state.move_mode == enabled {
+fn set_tool_override(state: &mut AppState, tool: Option<AnnotationTool>) {
+    if state.tool_override == tool {
         return;
     }
 
-    if enabled {
-        cancel_active_text_entries(state, true);
-    } else {
+    if state.tool_override == Some(AnnotationTool::Move) && tool != Some(AnnotationTool::Move) {
         clear_active_moves(state);
     }
+    if tool != Some(AnnotationTool::Text) {
+        cancel_active_text_entries(state, true);
+    }
 
-    state.move_mode = enabled;
+    state.tool_override = tool;
     overlay::refresh_zoom_badge_overlays(state);
     overlay::update_annotation_overlays(state);
 }
@@ -637,6 +645,7 @@ fn start_text_entry(state: &mut AppState, output_id: u32) {
     let Some(point) = point else {
         return;
     };
+    let text_color = state.effective_annotation_tool().color();
 
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.pointer_pressed = false;
@@ -645,7 +654,7 @@ fn start_text_entry(state: &mut AppState, output_id: u32) {
         window.active_text = Some(TextAnnotation {
             position: point,
             text: String::new(),
-            color: state.annotation_tool.color(),
+            color: text_color,
             scale: TEXT_ANNOTATION_SCALE,
         });
     }
@@ -668,10 +677,15 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
             overlay::refresh_annotation_overlay(state, output_id);
         }
         KEY_ESC => {
-            if let Some(window) = state.windows.get_mut(&output_id) {
-                window.active_text = None;
+            if state.tool_override == Some(AnnotationTool::Text) {
+                commit_or_discard_active_text_entry(state, output_id);
+                set_tool_override(state, None);
+            } else {
+                if let Some(window) = state.windows.get_mut(&output_id) {
+                    window.active_text = None;
+                }
+                overlay::update_annotation_overlays(state);
             }
-            overlay::update_annotation_overlays(state);
         }
         _ => {
             if let Some(text_input) = current_text_input(state, key) {
@@ -983,7 +997,7 @@ mod tests {
     use crate::config::{APP_ID, Config};
 
     use super::{
-        AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_M, handle_key_event,
+        AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_M, KEY_T, handle_key_event,
         select_annotation_tool,
     };
 
@@ -1007,12 +1021,12 @@ mod tests {
         state.annotation_tool = AnnotationTool::Rectangle;
 
         handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed);
-        assert!(state.move_mode);
+        assert_eq!(state.tool_override, Some(AnnotationTool::Move));
         assert_eq!(state.annotation_tool, AnnotationTool::Rectangle);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Move);
 
         handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed);
-        assert!(!state.move_mode);
+        assert_eq!(state.tool_override, None);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Rectangle);
     }
 
@@ -1021,12 +1035,12 @@ mod tests {
         let mut state = AppState::new(test_config());
         state.interaction_mode = InteractionMode::AnnotateZoomed;
         state.annotation_tool = AnnotationTool::Line;
-        state.move_mode = true;
+        state.tool_override = Some(AnnotationTool::Move);
 
         handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
 
         assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
-        assert!(!state.move_mode);
+        assert_eq!(state.tool_override, None);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Line);
     }
 
@@ -1034,13 +1048,46 @@ mod tests {
     fn selecting_another_tool_disables_move_mode() {
         let mut state = AppState::new(test_config());
         state.annotation_tool = AnnotationTool::Pen;
-        state.move_mode = true;
+        state.tool_override = Some(AnnotationTool::Move);
 
         select_annotation_tool(&mut state, AnnotationTool::Text);
 
-        assert!(!state.move_mode);
-        assert_eq!(state.annotation_tool, AnnotationTool::Text);
+        assert_eq!(state.tool_override, Some(AnnotationTool::Text));
+        assert_eq!(state.annotation_tool, AnnotationTool::Pen);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Text);
+    }
+
+    #[test]
+    fn text_mode_is_toggled_without_losing_selected_tool() {
+        let mut state = AppState::new(test_config());
+        state.interaction_mode = InteractionMode::AnnotateZoomed;
+        state.annotation_tool = AnnotationTool::Ellipse;
+
+        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed);
+        assert_eq!(state.tool_override, Some(AnnotationTool::Text));
+        assert_eq!(state.annotation_tool, AnnotationTool::Ellipse);
+        assert_eq!(state.effective_annotation_tool(), AnnotationTool::Text);
+
+        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed);
+        assert_eq!(state.tool_override, None);
+        assert_eq!(state.effective_annotation_tool(), AnnotationTool::Ellipse);
+    }
+
+    #[test]
+    fn escape_leaves_text_mode_before_navigation() {
+        let mut state = AppState::new(test_config());
+        state.interaction_mode = InteractionMode::AnnotateZoomed;
+        state.annotation_tool = AnnotationTool::Highlighter;
+        state.tool_override = Some(AnnotationTool::Text);
+
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+
+        assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
+        assert_eq!(state.tool_override, None);
+        assert_eq!(
+            state.effective_annotation_tool(),
+            AnnotationTool::Highlighter
+        );
     }
 }
 
