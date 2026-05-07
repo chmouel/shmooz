@@ -103,6 +103,18 @@ cargo run -- --zoom-in 25%
 
 ```
 
+## Install
+
+Install via rust or on Arch via the AUR (yay install shmooz for example)
+
+## Configure
+
+On sway for example:
+
+```conf
+bindsym $super+Control+Backspace exec pgrep shmooz && killall shmooz || shmooz --zoom-in 10% --output "$(swaymsg -t get_outputs | jq -r 'map(select(.focused == true)) | .[].name')"
+```
+
 ## Building
 
 Build it with Cargo:
