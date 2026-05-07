@@ -416,10 +416,9 @@ fn select_annotation_tool(state: &mut AppState, tool: AnnotationTool) {
 }
 
 fn start_annotation(state: &mut AppState, output_id: u32) {
-    let point = state
-        .windows
-        .get(&output_id)
-        .map(|window| AnnotationPoint::new(window.pointer_x, window.pointer_y));
+    let point = state.windows.get(&output_id).map(|window| {
+        screen_to_annotation_point(state, output_id, window.pointer_x, window.pointer_y)
+    });
 
     let Some(point) = point else {
         return;
@@ -433,7 +432,7 @@ fn start_annotation(state: &mut AppState, output_id: u32) {
 }
 
 fn update_active_annotation(state: &mut AppState, output_id: u32, x: f64, y: f64) {
-    let point = AnnotationPoint::new(x, y);
+    let point = screen_to_annotation_point(state, output_id, x, y);
     if let Some(window) = state.windows.get_mut(&output_id) {
         if let Some(active_annotation) = window.active_annotation.as_mut() {
             active_annotation.update(point);
@@ -640,4 +639,27 @@ fn scroll_scale(state: &AppState, output_id: u32) -> f64 {
         .get(&output_id)
         .map(|window| window.view_source.width / geometry_width)
         .unwrap_or(1.0)
+}
+
+fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) -> AnnotationPoint {
+    let logical_size = logical_size(state, output_id);
+    let Some(window) = state.windows.get(&output_id) else {
+        return AnnotationPoint::new(x, y);
+    };
+
+    let normalized_x = if logical_size.width > 0.0 {
+        (x / logical_size.width).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let normalized_y = if logical_size.height > 0.0 {
+        (y / logical_size.height).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    AnnotationPoint::new(
+        window.view_source.x + normalized_x * window.view_source.width,
+        window.view_source.y + normalized_y * window.view_source.height,
+    )
 }

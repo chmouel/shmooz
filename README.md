@@ -59,6 +59,7 @@ shmooz [options...]
 * Annotation mode freezes zoom and pan until you return to navigation.
 * `d` keeps the current zoomed view and lets you draw over it.
 * `w` restores the full view first, then enters draw mode without zoom.
+* Annotations stay attached to the underlying image content when you zoom or restore the view.
 * The on-screen indicator badge shows the current mode and the most important draw shortcuts.
 
 ### Examples

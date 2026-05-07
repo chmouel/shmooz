@@ -7,8 +7,12 @@ use crate::{
     error::{AppError, Result},
     render,
     shm::ShmBuffer,
-    state::{AnnotationPoint, AppState},
+    state::{
+        ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
+        StrokeAnnotation,
+    },
     window::{self, OverlayBufferSlot},
+    zoom::ViewRect,
 };
 
 const ANNOTATION_BUFFER_COUNT: usize = 3;
@@ -282,13 +286,22 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
         return;
     };
     let cursor = show_cursor.then_some(AnnotationPoint::new(window.pointer_x, window.pointer_y));
+    let projected_annotations = project_annotations(
+        &window.annotations,
+        window.view_source,
+        width as f64,
+        height as f64,
+    );
+    let projected_active = window.active_annotation.as_ref().map(|annotation| {
+        project_active_annotation(annotation, window.view_source, width as f64, height as f64)
+    });
 
     render::draw_annotation_overlay(
         slot.buffer.data.as_mut(),
         width as usize,
         height as usize,
-        &window.annotations,
-        window.active_annotation.as_ref(),
+        &projected_annotations,
+        projected_active.as_ref(),
         cursor,
     );
     slot.busy = true;
@@ -500,6 +513,106 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
         .unwrap_or((0, 0))
 }
 
+fn project_annotations(
+    annotations: &[AnnotationItem],
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> Vec<AnnotationItem> {
+    annotations
+        .iter()
+        .map(|annotation| match annotation {
+            AnnotationItem::Stroke(stroke) => AnnotationItem::Stroke(project_stroke(
+                stroke,
+                view_source,
+                logical_width,
+                logical_height,
+            )),
+            AnnotationItem::Shape(shape) => AnnotationItem::Shape(project_shape(
+                shape,
+                view_source,
+                logical_width,
+                logical_height,
+            )),
+        })
+        .collect()
+}
+
+fn project_active_annotation(
+    annotation: &ActiveAnnotation,
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> ActiveAnnotation {
+    match annotation {
+        ActiveAnnotation::Stroke(stroke) => ActiveAnnotation::Stroke(project_stroke(
+            stroke,
+            view_source,
+            logical_width,
+            logical_height,
+        )),
+        ActiveAnnotation::Shape(shape) => ActiveAnnotation::Shape(project_shape(
+            shape,
+            view_source,
+            logical_width,
+            logical_height,
+        )),
+    }
+}
+
+fn project_stroke(
+    stroke: &StrokeAnnotation,
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> StrokeAnnotation {
+    StrokeAnnotation {
+        points: stroke
+            .points
+            .iter()
+            .copied()
+            .map(|point| project_point(point, view_source, logical_width, logical_height))
+            .collect(),
+        color: stroke.color,
+        width: stroke.width,
+    }
+}
+
+fn project_shape(
+    shape: &ShapeAnnotation,
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> ShapeAnnotation {
+    ShapeAnnotation {
+        kind: shape.kind,
+        start: project_point(shape.start, view_source, logical_width, logical_height),
+        end: project_point(shape.end, view_source, logical_width, logical_height),
+        color: shape.color,
+        width: shape.width,
+    }
+}
+
+fn project_point(
+    point: AnnotationPoint,
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> AnnotationPoint {
+    if view_source.width <= 0.0
+        || view_source.height <= 0.0
+        || logical_width <= 0.0
+        || logical_height <= 0.0
+    {
+        return point;
+    }
+
+    AnnotationPoint::new(
+        ((point.x as f64 - view_source.x) / view_source.width) * logical_width,
+        ((point.y as f64 - view_source.y) / view_source.height) * logical_height,
+    )
+}
+
 fn window_surface(state: &AppState, output_id: u32) -> Result<wl_surface::WlSurface> {
     state
         .windows
@@ -545,6 +658,36 @@ impl Dispatch<wl_callback::WlCallback, AnnotationFrameKey> for AppState {
             }
             flush_annotation_overlay(state, key.output_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{state::AnnotationPoint, zoom::ViewRect};
+
+    use super::project_point;
+
+    #[test]
+    fn project_point_tracks_view_source_changes() {
+        let zoomed = ViewRect {
+            x: 100.0,
+            y: 50.0,
+            width: 400.0,
+            height: 200.0,
+        };
+        let full = ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 400.0,
+        };
+        let stored = AnnotationPoint { x: 300, y: 150 };
+
+        let zoomed_screen = project_point(stored, zoomed, 800.0, 400.0);
+        let full_screen = project_point(stored, full, 800.0, 400.0);
+
+        assert_eq!(zoomed_screen, AnnotationPoint { x: 400, y: 200 });
+        assert_eq!(full_screen, AnnotationPoint { x: 300, y: 150 });
     }
 }
 
