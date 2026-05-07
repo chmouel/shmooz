@@ -31,7 +31,6 @@ shmooz [options...]
 
 * `-h, --help` - Show help message and quit
 * `--map-close KEY` - Set key to close (e.g. `Esc`, `q`, `x`)
-* `--mouse-track` - Enable mouse tracking
 * `--output NAME` - Run on a specific output (e.g. `DP-1`)
 * `--zoom-in PERCENT` - Start with an initial zoom (for example `10%` or `0.5`)
 * `--invert-scroll` - Invert scroll direction
@@ -91,9 +90,6 @@ shmooz --zoom-in 10%
 
 # Run on one output only
 shmooz --output DP-1
-
-# Follow the mouse while zoomed
-shmooz --mouse-track
 
 # Enable spotlight from startup
 shmooz --spotlight --zoom-in 25%

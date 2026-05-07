@@ -51,12 +51,6 @@ pub struct Cli {
     pub map_close: Option<String>,
 
     #[arg(
-        long = "mouse-track",
-        help = "Enable mouse tracking (follow mouse without clicking)"
-    )]
-    pub mouse_track: bool,
-
-    #[arg(
         long = "output",
         value_name = "NAME",
         help = "Run on a specific output (e.g., 'DP-1')"

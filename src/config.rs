@@ -14,7 +14,6 @@ pub struct Config {
     #[allow(dead_code)]
     pub app_id: &'static str,
     pub close_key: Option<CloseKey>,
-    pub mouse_track: bool,
     pub initial_zoom: f64,
     pub output_filter: Option<String>,
     pub invert_scroll: bool,
@@ -38,7 +37,6 @@ impl TryFrom<Cli> for Config {
         Ok(Self {
             app_id: APP_ID,
             close_key,
-            mouse_track: cli.mouse_track,
             initial_zoom,
             output_filter: cli.output,
             invert_scroll: cli.invert_scroll,

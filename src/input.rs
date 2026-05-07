@@ -262,12 +262,6 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
             window.view_source.y -= delta_y * scale;
         }
         window::render_window(state, output_id);
-    } else if state.config.mouse_track {
-        if let Some(window) = state.windows.get_mut(&output_id) {
-            window.view_source.x += delta_x;
-            window.view_source.y += delta_y;
-        }
-        window::render_window(state, output_id);
     }
 
     if let Some(window) = state.windows.get_mut(&output_id) {
@@ -416,13 +410,13 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         KEY_W => toggle_annotation_mode(state, InteractionMode::AnnotateUnzoomed),
         KEY_P => select_annotation_tool(state, AnnotationTool::Pen),
         KEY_H => select_annotation_tool(state, AnnotationTool::Highlighter),
+        KEY_L => select_annotation_tool(state, AnnotationTool::Line),
         KEY_M if state.interaction_mode.is_annotating() => {
             toggle_tool_override(state, AnnotationTool::Move)
         }
         KEY_T if state.interaction_mode.is_annotating() => {
             toggle_tool_override(state, AnnotationTool::Text)
         }
-        KEY_L => select_annotation_tool(state, AnnotationTool::Line),
         KEY_R => select_annotation_tool(state, AnnotationTool::Rectangle),
         KEY_E => select_annotation_tool(state, AnnotationTool::Ellipse),
         KEY_U => undo_annotation(state),
@@ -997,7 +991,7 @@ mod tests {
     use crate::config::{APP_ID, Config};
 
     use super::{
-        AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_M, KEY_T, handle_key_event,
+        AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_L, KEY_M, KEY_T, handle_key_event,
         select_annotation_tool,
     };
 
@@ -1005,7 +999,6 @@ mod tests {
         Config {
             app_id: APP_ID,
             close_key: None,
-            mouse_track: false,
             initial_zoom: 0.0,
             output_filter: None,
             invert_scroll: false,
@@ -1088,6 +1081,16 @@ mod tests {
             state.effective_annotation_tool(),
             AnnotationTool::Highlighter
         );
+    }
+
+    #[test]
+    fn line_tool_is_selectable() {
+        let mut state = AppState::new(test_config());
+        state.annotation_tool = AnnotationTool::Pen;
+
+        handle_key_event(&mut state, KEY_L, wl_keyboard::KeyState::Pressed);
+
+        assert_eq!(state.annotation_tool, AnnotationTool::Line);
     }
 }
 

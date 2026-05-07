@@ -627,14 +627,13 @@ mod tests {
 
     use super::{
         AnnotationItem, AnnotationPoint, AnnotationShapeKind, AnnotationTool, AppState,
-        ShapeAnnotation, StrokeAnnotation, TextAnnotation,
+        InteractionMode, ShapeAnnotation, StrokeAnnotation, TextAnnotation,
     };
 
     fn test_config() -> Config {
         Config {
             app_id: APP_ID,
             close_key: None,
-            mouse_track: false,
             initial_zoom: 0.0,
             output_filter: None,
             invert_scroll: false,
@@ -695,5 +694,14 @@ mod tests {
 
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Move);
         assert_eq!(state.annotation_tool, AnnotationTool::Rectangle);
+    }
+
+    #[test]
+    fn navigate_badge_shows_draw_modes() {
+        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen);
+
+        assert_eq!(badge.subtitle, "View controls and quick entry points");
+        assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
+        assert_eq!(badge.lines[2].text, "S spot  [ ] radius  Esc close");
     }
 }
