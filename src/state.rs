@@ -560,7 +560,6 @@ pub struct KeyboardTextState {
 
 pub struct ClipboardSelection {
     pub source: wl_data_source::WlDataSource,
-    pub mime_type: &'static str,
     pub data: Vec<u8>,
 }
 

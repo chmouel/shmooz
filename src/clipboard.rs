@@ -32,11 +32,7 @@ pub fn set_png_selection(state: &mut AppState, serial: u32, png: Vec<u8>) -> Res
     let source = manager.create_data_source(&queue_handle, ());
     source.offer(PNG_MIME_TYPE.to_owned());
     data_device.set_selection(Some(&source), serial);
-    state.clipboard_selection = Some(ClipboardSelection {
-        source,
-        mime_type: PNG_MIME_TYPE,
-        data: png,
-    });
+    state.clipboard_selection = Some(ClipboardSelection { source, data: png });
     Ok(())
 }
 
@@ -105,14 +101,17 @@ fn send_selection(
         return;
     };
 
-    if mime_type != selection.mime_type {
+    if mime_type != PNG_MIME_TYPE {
         return;
     }
 
-    let mut file = File::from(fd);
-    if let Err(err) = file.write_all(&selection.data).and_then(|_| file.flush()) {
-        tracing::warn!(mime_type, error = %err, "failed to serve clipboard data");
-    }
+    let data = selection.data.clone();
+    std::thread::spawn(move || {
+        let mut file = File::from(fd);
+        if let Err(err) = file.write_all(&data) {
+            tracing::warn!(mime_type = PNG_MIME_TYPE, error = %err, "failed to serve clipboard data");
+        }
+    });
 }
 
 delegate_noop!(AppState: ignore wl_data_device_manager::WlDataDeviceManager);

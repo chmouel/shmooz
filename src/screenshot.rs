@@ -338,21 +338,16 @@ fn write_png(directory: &Path, png: &[u8]) -> Result<PathBuf> {
 }
 
 fn encode_png_bytes(pixels: &[u32], width: usize, height: usize) -> Result<Vec<u8>> {
+    let png_err = |err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}"));
     let mut encoded = Vec::new();
     let writer = std::io::BufWriter::new(&mut encoded);
     let mut encoder = Encoder::new(writer, width as u32, height as u32);
     encoder.set_color(ColorType::Rgba);
     encoder.set_depth(BitDepth::Eight);
-    let mut png_writer = encoder
-        .write_header()
-        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
+    let mut png_writer = encoder.write_header().map_err(png_err)?;
     let rgba = rgba_bytes(pixels);
-    png_writer
-        .write_image_data(&rgba)
-        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
-    png_writer
-        .finish()
-        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
+    png_writer.write_image_data(&rgba).map_err(png_err)?;
+    png_writer.finish().map_err(png_err)?;
     Ok(encoded)
 }
 
