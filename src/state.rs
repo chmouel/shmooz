@@ -13,6 +13,7 @@ use wayland_protocols_wlr::{
     layer_shell::v1::client::zwlr_layer_shell_v1,
     screencopy::v1::client::zwlr_screencopy_manager_v1,
 };
+use xkbcommon::xkb;
 
 use crate::{
     config::Config,
@@ -50,9 +51,9 @@ impl InteractionMode {
                 "S SPOT  ESC CLOSE",
             ],
             Self::AnnotateZoomed | Self::AnnotateUnzoomed => [
-                "P PEN  H HILITE  L LINE",
-                "R RECT  E ELLIPSE  U UNDO",
-                "C CLEAR  ESC BACK",
+                "P PEN  H HILITE  T TEXT",
+                "L LINE  R RECT  E ELLIPSE",
+                "U UNDO  C CLEAR  ENTER COMMIT",
             ],
         }
     }
@@ -63,6 +64,7 @@ pub enum AnnotationTool {
     #[default]
     Pen,
     Highlighter,
+    Text,
     Line,
     Rectangle,
     Ellipse,
@@ -73,6 +75,7 @@ impl AnnotationTool {
         match self {
             Self::Pen => "PEN",
             Self::Highlighter => "HILITE",
+            Self::Text => "TEXT",
             Self::Line => "LINE",
             Self::Rectangle => "RECT",
             Self::Ellipse => "ELLIPSE",
@@ -83,6 +86,7 @@ impl AnnotationTool {
         match self {
             Self::Pen | Self::Line => 0xFFFF_4F5E,
             Self::Highlighter => 0x8888_7829,
+            Self::Text => 0xFFFF_FFFF,
             Self::Rectangle => 0xFF48_C78E,
             Self::Ellipse => 0xFF5B_8DEF,
         }
@@ -92,6 +96,7 @@ impl AnnotationTool {
         match self {
             Self::Pen | Self::Line => 4,
             Self::Highlighter => 18,
+            Self::Text => 4,
             Self::Rectangle | Self::Ellipse => 5,
         }
     }
@@ -101,7 +106,7 @@ impl AnnotationTool {
             Self::Line => Some(AnnotationShapeKind::Line),
             Self::Rectangle => Some(AnnotationShapeKind::Rectangle),
             Self::Ellipse => Some(AnnotationShapeKind::Ellipse),
-            Self::Pen | Self::Highlighter => None,
+            Self::Pen | Self::Highlighter | Self::Text => None,
         }
     }
 }
@@ -145,9 +150,18 @@ pub struct ShapeAnnotation {
 }
 
 #[derive(Debug, Clone)]
+pub struct TextAnnotation {
+    pub position: AnnotationPoint,
+    pub text: String,
+    pub color: u32,
+    pub scale: usize,
+}
+
+#[derive(Debug, Clone)]
 pub enum AnnotationItem {
     Stroke(StrokeAnnotation),
     Shape(ShapeAnnotation),
+    Text(TextAnnotation),
 }
 
 #[derive(Debug, Clone)]
@@ -271,9 +285,17 @@ pub struct AppState {
     pub spotlight_radius_frac: f64,
     pub interaction_mode: InteractionMode,
     pub annotation_tool: AnnotationTool,
+    pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
     pub repeat_interval: Duration,
+}
+
+pub struct KeyboardTextState {
+    pub _context: xkb::Context,
+    pub _keymap: xkb::Keymap,
+    pub state: xkb::State,
+    pub compose: Option<xkb::compose::State>,
 }
 
 impl AppState {
@@ -292,6 +314,7 @@ impl AppState {
             spotlight_radius_frac: 0.25,
             interaction_mode: InteractionMode::default(),
             annotation_tool: AnnotationTool::default(),
+            keyboard_text: None,
             repeat_key: None,
             repeat_deadline: None,
             repeat_interval: Duration::from_millis(50),

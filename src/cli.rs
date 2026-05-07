@@ -16,11 +16,15 @@ Controls:
 
   Annotation:
     Left click + drag     Draw with selected tool
+    Left click            Place text when text tool is selected
     p                     Pen
     h                     Highlighter
+    t                     Text
     l                     Line
     r                     Rectangle
     e                     Ellipse
+    Enter                 Commit active text
+    Backspace             Delete last text character
     u                     Undo last annotation
     c                     Clear annotations
     Esc                   Return to navigation

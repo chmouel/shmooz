@@ -1,13 +1,18 @@
+use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
 use wayland_client::{
     Dispatch, QueueHandle, WEnum,
     protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface},
 };
+use xkbcommon::xkb;
 
 use crate::{
     overlay,
-    state::{ActiveAnnotation, AnnotationPoint, AnnotationTool, AppState, InteractionMode},
+    state::{
+        ActiveAnnotation, AnnotationPoint, AnnotationTool, AppState, InteractionMode,
+        KeyboardTextState, TextAnnotation,
+    },
     window,
     zoom::{Point, Size, apply_zoom, restore_view, screen_center},
 };
@@ -16,21 +21,51 @@ const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
 const KEY_ESC: u32 = 1;
+const KEY_1: u32 = 2;
+const KEY_2: u32 = 3;
+const KEY_3: u32 = 4;
+const KEY_4: u32 = 5;
+const KEY_5: u32 = 6;
+const KEY_6: u32 = 7;
+const KEY_7: u32 = 8;
+const KEY_8: u32 = 9;
+const KEY_9: u32 = 10;
 const KEY_0: u32 = 11;
 const KEY_MINUS: u32 = 12;
 const KEY_EQUAL: u32 = 13;
+const KEY_BACKSPACE: u32 = 14;
+const KEY_ENTER: u32 = 28;
+const KEY_A: u32 = 30;
+const KEY_B: u32 = 48;
+const KEY_F: u32 = 33;
+const KEY_G: u32 = 34;
+const KEY_I: u32 = 23;
+const KEY_J: u32 = 36;
+const KEY_K: u32 = 37;
+const KEY_M: u32 = 50;
+const KEY_N: u32 = 49;
+const KEY_O: u32 = 24;
 const KEY_W: u32 = 17;
 const KEY_E: u32 = 18;
 const KEY_R: u32 = 19;
+const KEY_T: u32 = 20;
 const KEY_U: u32 = 22;
 const KEY_P: u32 = 25;
+const KEY_Q: u32 = 16;
 const KEY_LEFTBRACE: u32 = 26;
 const KEY_RIGHTBRACE: u32 = 27;
 const KEY_S: u32 = 31;
 const KEY_D: u32 = 32;
 const KEY_H: u32 = 35;
 const KEY_L: u32 = 38;
+const KEY_V: u32 = 47;
+const KEY_X: u32 = 45;
+const KEY_Y: u32 = 21;
+const KEY_Z: u32 = 44;
 const KEY_C: u32 = 46;
+const KEY_DOT: u32 = 52;
+const KEY_SLASH: u32 = 53;
+const KEY_SPACE: u32 = 57;
 const KEY_KPMINUS: u32 = 74;
 const KEY_KPPLUS: u32 = 78;
 const KEY_KP0: u32 = 82;
@@ -43,6 +78,7 @@ const DOUBLE_CLICK_TIME_MS: u32 = 400;
 const KEYBOARD_PAN_STEP: f64 = 50.0;
 const KEYBOARD_ZOOM_STEP: f64 = 10.0;
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
+const TEXT_ANNOTATION_SCALE: usize = 4;
 
 pub fn repeat_timer_tick(state: &mut AppState) {
     let (Some(key), Some(deadline)) = (state.repeat_key, state.repeat_deadline) else {
@@ -138,15 +174,24 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
     ) {
         match event {
             wl_keyboard::Event::Enter { .. } | wl_keyboard::Event::Leave { .. } => {}
+            wl_keyboard::Event::Keymap {
+                format: WEnum::Value(wl_keyboard::KeymapFormat::XkbV1),
+                fd,
+                size,
+            } => install_keyboard_keymap(state, fd, size as usize),
             wl_keyboard::Event::Key {
                 key,
                 state: WEnum::Value(key_state),
                 ..
             } => handle_key_event(state, key, key_state),
-            wl_keyboard::Event::Keymap { .. }
-            | wl_keyboard::Event::Modifiers { .. }
-            | wl_keyboard::Event::RepeatInfo { .. }
-            | _ => {}
+            wl_keyboard::Event::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            } => update_keyboard_modifiers(state, mods_depressed, mods_latched, mods_locked, group),
+            wl_keyboard::Event::Keymap { .. } | wl_keyboard::Event::RepeatInfo { .. } | _ => {}
         }
     }
 }
@@ -229,11 +274,16 @@ fn pointer_button(
     if state.interaction_mode.is_annotating() {
         match button {
             BTN_LEFT if button_state == wl_pointer::ButtonState::Pressed => {
-                start_annotation(state, output_id);
+                if state.annotation_tool == AnnotationTool::Text {
+                    start_text_entry(state, output_id);
+                } else {
+                    start_annotation(state, output_id);
+                }
             }
-            BTN_LEFT if button_state == wl_pointer::ButtonState::Released => {
-                finish_annotation(state, output_id);
-            }
+            BTN_LEFT if button_state == wl_pointer::ButtonState::Released
+                && state.annotation_tool != AnnotationTool::Text => {
+                    finish_annotation(state, output_id);
+                }
             BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
                 state.request_exit();
             }
@@ -305,12 +355,15 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         return;
     }
 
+    if handle_active_text_input(state, key) {
+        return;
+    }
+
     if key == KEY_ESC
         && state.interaction_mode.is_annotating()
-        && !state
+        && state
             .config
-            .close_key
-            .is_some_and(|close_key| close_key.key_code() == KEY_ESC)
+            .close_key.is_none_or(|close_key| close_key.key_code() != KEY_ESC)
     {
         set_interaction_mode(state, InteractionMode::Navigate);
         return;
@@ -331,6 +384,7 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         KEY_W => toggle_annotation_mode(state, InteractionMode::AnnotateUnzoomed),
         KEY_P => select_annotation_tool(state, AnnotationTool::Pen),
         KEY_H => select_annotation_tool(state, AnnotationTool::Highlighter),
+        KEY_T => select_annotation_tool(state, AnnotationTool::Text),
         KEY_L => select_annotation_tool(state, AnnotationTool::Line),
         KEY_R => select_annotation_tool(state, AnnotationTool::Rectangle),
         KEY_E => select_annotation_tool(state, AnnotationTool::Ellipse),
@@ -393,12 +447,7 @@ fn toggle_annotation_mode(state: &mut AppState, mode: InteractionMode) {
 
 fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
     if mode == InteractionMode::AnnotateUnzoomed {
-        if let Some(output_id) = active_window_id(state) {
-            if let Some(window) = state.windows.get_mut(&output_id) {
-                restore_view(&mut window.view_source, window.initial_view_source);
-            }
-            window::render_window(state, output_id);
-        }
+        restore_all_windows(state);
     }
 
     cancel_active_annotations(state);
@@ -410,6 +459,9 @@ fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
 }
 
 fn select_annotation_tool(state: &mut AppState, tool: AnnotationTool) {
+    if state.annotation_tool != tool {
+        cancel_active_text_entries(state, true);
+    }
     state.annotation_tool = tool;
     overlay::refresh_zoom_badge_overlays(state);
     overlay::update_annotation_overlays(state);
@@ -433,11 +485,10 @@ fn start_annotation(state: &mut AppState, output_id: u32) {
 
 fn update_active_annotation(state: &mut AppState, output_id: u32, x: f64, y: f64) {
     let point = screen_to_annotation_point(state, output_id, x, y);
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        if let Some(active_annotation) = window.active_annotation.as_mut() {
+    if let Some(window) = state.windows.get_mut(&output_id)
+        && let Some(active_annotation) = window.active_annotation.as_mut() {
             active_annotation.update(point);
         }
-    }
     overlay::refresh_annotation_overlay(state, output_id);
 }
 
@@ -450,11 +501,86 @@ fn finish_annotation(state: &mut AppState, output_id: u32) {
             .and_then(ActiveAnnotation::finish)
     });
 
-    if let Some(annotation) = completed {
-        if let Some(window) = state.windows.get_mut(&output_id) {
+    if let Some(annotation) = completed
+        && let Some(window) = state.windows.get_mut(&output_id) {
             window.annotations.push(annotation);
         }
+
+    overlay::update_annotation_overlays(state);
+}
+
+fn start_text_entry(state: &mut AppState, output_id: u32) {
+    cancel_active_text_entries(state, false);
+
+    let point = state.windows.get(&output_id).map(|window| {
+        screen_to_annotation_point(state, output_id, window.pointer_x, window.pointer_y)
+    });
+    let Some(point) = point else {
+        return;
+    };
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.pointer_pressed = false;
+        window.active_annotation = None;
+        window.active_text = Some(TextAnnotation {
+            position: point,
+            text: String::new(),
+            color: state.annotation_tool.color(),
+            scale: TEXT_ANNOTATION_SCALE,
+        });
     }
+    overlay::update_annotation_overlays(state);
+}
+
+fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
+    let Some(output_id) = active_text_output_id(state) else {
+        return false;
+    };
+
+    match key {
+        KEY_ENTER => commit_or_discard_active_text_entry(state, output_id),
+        KEY_BACKSPACE => {
+            if let Some(window) = state.windows.get_mut(&output_id)
+                && let Some(text) = window.active_text.as_mut() {
+                    text.text.pop();
+                }
+            overlay::refresh_annotation_overlay(state, output_id);
+        }
+        KEY_ESC => {
+            if let Some(window) = state.windows.get_mut(&output_id) {
+                window.active_text = None;
+            }
+            overlay::update_annotation_overlays(state);
+        }
+        _ => {
+            if let Some(text_input) = current_text_input(state, key) {
+                if let Some(window) = state.windows.get_mut(&output_id)
+                    && let Some(text) = window.active_text.as_mut()
+                        && text.text.chars().count() + text_input.chars().count() <= 64 {
+                            text.text.push_str(&text_input);
+                        }
+                overlay::refresh_annotation_overlay(state, output_id);
+            } else {
+                overlay::refresh_annotation_overlay(state, output_id);
+            }
+        }
+    }
+
+    true
+}
+
+fn commit_or_discard_active_text_entry(state: &mut AppState, output_id: u32) {
+    let entry = state
+        .windows
+        .get_mut(&output_id)
+        .and_then(|window| window.active_text.take());
+
+    if let Some(entry) = entry.filter(|entry| !entry.text.is_empty())
+        && let Some(window) = state.windows.get_mut(&output_id) {
+            window
+                .annotations
+                .push(crate::state::AnnotationItem::Text(entry));
+        }
 
     overlay::update_annotation_overlays(state);
 }
@@ -465,7 +591,9 @@ fn undo_annotation(state: &mut AppState) {
     };
 
     if let Some(window) = state.windows.get_mut(&output_id) {
-        if window.active_annotation.take().is_none() {
+        if window.active_text.take().is_some() {
+            // Drop the active text draft before touching committed annotations.
+        } else if window.active_annotation.take().is_none() {
             window.annotations.pop();
         }
         window.pointer_pressed = false;
@@ -481,6 +609,7 @@ fn clear_annotations(state: &mut AppState) {
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.annotations.clear();
         window.active_annotation = None;
+        window.active_text = None;
         window.pointer_pressed = false;
     }
     overlay::update_annotation_overlays(state);
@@ -491,9 +620,24 @@ fn cancel_active_annotations(state: &mut AppState) {
     for output_id in output_ids {
         if let Some(window) = state.windows.get_mut(&output_id) {
             window.active_annotation = None;
+            window.active_text = None;
             window.pointer_pressed = false;
         }
         overlay::update_window_overlays(state, output_id);
+    }
+}
+
+fn cancel_active_text_entries(state: &mut AppState, discard_only: bool) {
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+    for output_id in output_ids {
+        if discard_only {
+            if let Some(window) = state.windows.get_mut(&output_id) {
+                window.active_text = None;
+            }
+            overlay::update_annotation_overlays(state);
+        } else {
+            commit_or_discard_active_text_entry(state, output_id);
+        }
     }
 }
 
@@ -506,6 +650,16 @@ fn restore_focused_window(state: &mut AppState) {
         restore_view(&mut window.view_source, window.initial_view_source);
     }
     window::render_window(state, output_id);
+}
+
+fn restore_all_windows(state: &mut AppState) {
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+    for output_id in output_ids {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            restore_view(&mut window.view_source, window.initial_view_source);
+        }
+        window::render_window(state, output_id);
+    }
 }
 
 fn pan_focused_window(state: &mut AppState, output_id: u32, dx: f64, dy: f64) {
@@ -524,6 +678,27 @@ fn active_window_id(state: &AppState) -> Option<u32> {
             None
         }
     })
+}
+
+fn active_text_output_id(state: &AppState) -> Option<u32> {
+    if let Some(output_id) = state.focused_window.filter(|output_id| {
+        state
+            .windows
+            .get(output_id)
+            .is_some_and(|window| window.active_text.is_some())
+    }) {
+        return Some(output_id);
+    }
+
+    let mut active_outputs = state
+        .windows
+        .iter()
+        .filter_map(|(output_id, window)| window.active_text.as_ref().map(|_| *output_id));
+    let output_id = active_outputs.next()?;
+    if active_outputs.next().is_some() {
+        return None;
+    }
+    Some(output_id)
 }
 
 fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_change: f64) {
@@ -662,4 +837,142 @@ fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) 
         window.view_source.x + normalized_x * window.view_source.width,
         window.view_source.y + normalized_y * window.view_source.height,
     )
+}
+
+fn install_keyboard_keymap(state: &mut AppState, fd: std::os::fd::OwnedFd, size: usize) {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = unsafe {
+        xkb::Keymap::new_from_fd(
+            &context,
+            fd,
+            size,
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+    };
+    let Ok(Some(keymap)) = keymap else {
+        state.keyboard_text = None;
+        return;
+    };
+    let state_machine = xkb::State::new(&keymap);
+    let compose = compose_state_for_locale(&context);
+
+    state.keyboard_text = Some(KeyboardTextState {
+        _context: context,
+        _keymap: keymap,
+        state: state_machine,
+        compose,
+    });
+}
+
+fn update_keyboard_modifiers(
+    state: &mut AppState,
+    mods_depressed: u32,
+    mods_latched: u32,
+    mods_locked: u32,
+    group: u32,
+) {
+    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
+        keyboard_text
+            .state
+            .update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
+}
+
+fn compose_state_for_locale(context: &xkb::Context) -> Option<xkb::compose::State> {
+    let locale = std::env::var_os("LC_ALL")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("LC_CTYPE").filter(|value| !value.is_empty()))
+        .or_else(|| std::env::var_os("LANG").filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| OsString::from("C.UTF-8"));
+
+    let table =
+        xkb::compose::Table::new_from_locale(context, &locale, xkb::compose::COMPILE_NO_FLAGS)
+            .ok()?;
+    Some(xkb::compose::State::new(
+        &table,
+        xkb::compose::STATE_NO_FLAGS,
+    ))
+}
+
+fn current_text_input(state: &mut AppState, key: u32) -> Option<String> {
+    let keycode = xkb::Keycode::new(key + 8);
+
+    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
+        if let Some(compose) = keyboard_text.compose.as_mut() {
+            let keysym = keyboard_text.state.key_get_one_sym(keycode);
+            let _ = compose.feed(keysym);
+            match compose.status() {
+                xkb::compose::Status::Composing => return None,
+                xkb::compose::Status::Composed => {
+                    let text = compose.utf8();
+                    compose.reset();
+                    return sanitize_text_input(text);
+                }
+                xkb::compose::Status::Cancelled => {
+                    compose.reset();
+                }
+                xkb::compose::Status::Nothing => {}
+            }
+        }
+
+        return sanitize_text_input(Some(keyboard_text.state.key_get_utf8(keycode)));
+    }
+
+    text_input_char(key).map(|ch| ch.to_string())
+}
+
+fn sanitize_text_input(input: Option<String>) -> Option<String> {
+    let input = input?;
+    let filtered = input
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '\u{7f}')
+        .collect::<String>();
+    (!filtered.is_empty()).then_some(filtered)
+}
+
+fn text_input_char(key: u32) -> Option<char> {
+    match key {
+        KEY_A => Some('A'),
+        KEY_B => Some('B'),
+        KEY_C => Some('C'),
+        KEY_D => Some('D'),
+        KEY_E => Some('E'),
+        KEY_F => Some('F'),
+        KEY_G => Some('G'),
+        KEY_H => Some('H'),
+        KEY_I => Some('I'),
+        KEY_J => Some('J'),
+        KEY_K => Some('K'),
+        KEY_L => Some('L'),
+        KEY_M => Some('M'),
+        KEY_N => Some('N'),
+        KEY_O => Some('O'),
+        KEY_P => Some('P'),
+        KEY_Q => Some('Q'),
+        KEY_R => Some('R'),
+        KEY_S => Some('S'),
+        KEY_T => Some('T'),
+        KEY_U => Some('U'),
+        KEY_V => Some('V'),
+        KEY_W => Some('W'),
+        KEY_X => Some('X'),
+        KEY_Y => Some('Y'),
+        KEY_Z => Some('Z'),
+        KEY_0 => Some('0'),
+        KEY_1 => Some('1'),
+        KEY_2 => Some('2'),
+        KEY_3 => Some('3'),
+        KEY_4 => Some('4'),
+        KEY_5 => Some('5'),
+        KEY_6 => Some('6'),
+        KEY_7 => Some('7'),
+        KEY_8 => Some('8'),
+        KEY_9 => Some('9'),
+        KEY_SPACE => Some(' '),
+        KEY_MINUS => Some('-'),
+        KEY_DOT => Some('.'),
+        KEY_SLASH => Some('/'),
+        _ => None,
+    }
 }

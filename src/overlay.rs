@@ -9,7 +9,7 @@ use crate::{
     shm::ShmBuffer,
     state::{
         ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
-        StrokeAnnotation,
+        StrokeAnnotation, TextAnnotation,
     },
     window::{self, OverlayBufferSlot},
     zoom::ViewRect,
@@ -295,6 +295,10 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     let projected_active = window.active_annotation.as_ref().map(|annotation| {
         project_active_annotation(annotation, window.view_source, width as f64, height as f64)
     });
+    let projected_text = window
+        .active_text
+        .as_ref()
+        .map(|text| project_text_annotation(text, window.view_source, width as f64, height as f64));
 
     render::draw_annotation_overlay(
         slot.buffer.data.as_mut(),
@@ -302,6 +306,7 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
         height as usize,
         &projected_annotations,
         projected_active.as_ref(),
+        projected_text.as_ref(),
         cursor,
     );
     slot.busy = true;
@@ -390,7 +395,8 @@ fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
             window.annotation_surface.is_some()
                 && (state.interaction_mode.is_annotating()
                     || !window.annotations.is_empty()
-                    || window.active_annotation.is_some())
+                    || window.active_annotation.is_some()
+                    || window.active_text.is_some())
         })
         .unwrap_or(false);
 
@@ -534,6 +540,12 @@ fn project_annotations(
                 logical_width,
                 logical_height,
             )),
+            AnnotationItem::Text(text) => AnnotationItem::Text(project_text_annotation(
+                text,
+                view_source,
+                logical_width,
+                logical_height,
+            )),
         })
         .collect()
 }
@@ -593,6 +605,20 @@ fn project_shape(
     }
 }
 
+fn project_text_annotation(
+    text: &TextAnnotation,
+    view_source: ViewRect,
+    logical_width: f64,
+    logical_height: f64,
+) -> TextAnnotation {
+    TextAnnotation {
+        position: project_point(text.position, view_source, logical_width, logical_height),
+        text: text.text.clone(),
+        color: text.color,
+        scale: text.scale,
+    }
+}
+
 fn project_point(
     point: AnnotationPoint,
     view_source: ViewRect,
@@ -633,11 +659,10 @@ impl Dispatch<wl_buffer::WlBuffer, AnnotationBufferKey> for AppState {
         _: &QueueHandle<Self>,
     ) {
         if let wl_buffer::Event::Release = event {
-            if let Some(window) = state.windows.get_mut(&key.output_id) {
-                if let Some(slot) = window.annotation_buffers.get_mut(key.slot) {
+            if let Some(window) = state.windows.get_mut(&key.output_id)
+                && let Some(slot) = window.annotation_buffers.get_mut(key.slot) {
                     slot.busy = false;
                 }
-            }
             flush_annotation_overlay(state, key.output_id);
         }
     }

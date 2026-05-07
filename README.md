@@ -4,7 +4,9 @@ A zoom / magnifier utility for Wayland compositors.
 
 `shmooz` is a zoom / magnifier utility for Wayland compositors written in Rust.
 
-It now includes an annotation overlay with pen, highlighter, line, rectangle, and ellipse tools, plus undo, clear, and a draw-without-zoom mode.
+It includes an annotation overlay with pen, highlighter, line, text,
+rectangle, and ellipse tools, plus undo, clear and other necessary features to
+make it a useful presentation tool.
 
 ## Usage
 
@@ -35,6 +37,7 @@ shmooz [options...]
 **Annotation mode mouse:**
 
 * Left click + drag - Draw with the selected annotation tool
+* Left click - Place a text annotation when the text tool is selected
 
 **Keyboard:**
 
@@ -47,9 +50,12 @@ shmooz [options...]
 * `[` / `]` - Decrease / increase spotlight radius
 * `p` - Select pen
 * `h` - Select highlighter
+* `t` - Select text
 * `l` - Select line
 * `r` - Select rectangle
 * `e` - Select ellipse
+* `Enter` - Commit the current text annotation
+* `Backspace` - Delete the last typed text character
 * `u` - Undo the last annotation on the focused output
 * `c` - Clear annotations on the focused output
 * `Esc` - Leave annotation mode, or exit by default when navigating
@@ -60,6 +66,7 @@ shmooz [options...]
 * `d` keeps the current zoomed view and lets you draw over it.
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
+* Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
 * The on-screen indicator badge shows the current mode and the most important draw shortcuts.
 
 ### Examples

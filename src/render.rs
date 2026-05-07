@@ -2,7 +2,7 @@ use bytemuck::cast_slice_mut;
 
 use crate::state::{
     ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
-    StrokeAnnotation,
+    StrokeAnnotation, TextAnnotation,
 };
 
 const BADGE_TITLE_SCALE: usize = 3;
@@ -91,6 +91,7 @@ pub fn draw_annotation_overlay(
     height: usize,
     annotations: &[AnnotationItem],
     active_annotation: Option<&ActiveAnnotation>,
+    active_text: Option<&TextAnnotation>,
     cursor: Option<AnnotationPoint>,
 ) {
     let pixels = pixels_u32(pixels);
@@ -105,6 +106,10 @@ pub fn draw_annotation_overlay(
             ActiveAnnotation::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
             ActiveAnnotation::Shape(shape) => draw_shape(pixels, width, height, shape),
         }
+    }
+
+    if let Some(active_text) = active_text {
+        draw_text_annotation(pixels, width, height, active_text);
     }
 
     if let Some(cursor) = cursor {
@@ -185,6 +190,7 @@ fn draw_annotation_item(
     match annotation {
         AnnotationItem::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
         AnnotationItem::Shape(shape) => draw_shape(pixels, width, height, shape),
+        AnnotationItem::Text(text) => draw_text_annotation(pixels, width, height, text),
     }
 }
 
@@ -304,6 +310,43 @@ fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: A
         2,
     );
     draw_disc(pixels, width, height, cursor.x, cursor.y, 4, 0xFFFF_C83D);
+}
+
+fn draw_text_annotation(pixels: &mut [u32], width: usize, height: usize, text: &TextAnnotation) {
+    if text.text.is_empty() {
+        fill_rect_pixels(
+            pixels,
+            width,
+            height,
+            text.position.x.max(0) as usize,
+            text.position.y.max(0) as usize,
+            2,
+            7 * text.scale.max(1),
+            0xFFFF_C83D,
+        );
+        return;
+    }
+
+    draw_label_pixels(
+        pixels,
+        width,
+        height,
+        text.position.x + 2,
+        text.position.y + 2,
+        &text.text,
+        text.scale.max(1),
+        0xC000_0000,
+    );
+    draw_label_pixels(
+        pixels,
+        width,
+        height,
+        text.position.x,
+        text.position.y,
+        &text.text,
+        text.scale.max(1),
+        text.color,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,49 +509,102 @@ fn alpha_over(dst: u32, src: u32) -> u32 {
     (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_label(
     pixels: &mut [u8],
     width: usize,
     height: usize,
-    mut x: usize,
+    x: usize,
     y: usize,
     label: &str,
     scale: usize,
     color: u32,
 ) {
     let pixels = pixels_u32(pixels);
+    draw_label_pixels(
+        pixels, width, height, x as i32, y as i32, label, scale, color,
+    );
+}
 
+#[allow(clippy::too_many_arguments)]
+fn draw_label_pixels(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    mut x: i32,
+    y: i32,
+    label: &str,
+    scale: usize,
+    color: u32,
+) {
     for ch in label.chars() {
-        if ch == ' ' {
-            x += 6 * scale;
-            continue;
-        }
-
-        let Some(glyph) = lookup_glyph(ch) else {
-            x += 6 * scale;
-            continue;
-        };
-
-        for (row, bits) in glyph.iter().enumerate() {
-            for col in 0..5 {
-                if bits & (1 << (4 - col)) == 0 {
-                    continue;
-                }
-                fill_rect_pixels(
-                    pixels,
-                    width,
-                    height,
-                    x + col * scale,
-                    y + row * scale,
-                    scale,
-                    scale,
-                    color,
-                );
-            }
-        }
-
-        x += 6 * scale;
+        x = draw_text_glyph(pixels, width, height, x, y, ch, scale, color);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text_glyph(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    mut x: i32,
+    y: i32,
+    ch: char,
+    scale: usize,
+    color: u32,
+) -> i32 {
+    if ch == ' ' {
+        return x + (6 * scale) as i32;
+    }
+
+    if let Some(glyph) = lookup_glyph(ch) {
+        return draw_bitmap_glyph(pixels, width, height, x, y, glyph, scale, color);
+    }
+
+    let fallback = format!("U+{:04X}", ch as u32);
+    for fallback_ch in fallback.chars() {
+        x = draw_text_glyph(pixels, width, height, x, y, fallback_ch, scale, color);
+    }
+    x
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_bitmap_glyph(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    glyph: &[u8; 7],
+    scale: usize,
+    color: u32,
+) -> i32 {
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..5 {
+            if bits & (1 << (4 - col)) == 0 {
+                continue;
+            }
+
+            let pixel_x = x + (col * scale) as i32;
+            let pixel_y = y + (row * scale) as i32;
+            if pixel_x < 0 || pixel_y < 0 {
+                continue;
+            }
+
+            fill_rect_pixels(
+                pixels,
+                width,
+                height,
+                pixel_x as usize,
+                pixel_y as usize,
+                scale,
+                scale,
+                color,
+            );
+        }
+    }
+
+    x + (6 * scale) as i32
 }
 
 fn lookup_glyph(ch: char) -> Option<&'static [u8; 7]> {
@@ -522,22 +618,77 @@ fn lookup_glyph(ch: char) -> Option<&'static [u8; 7]> {
         'G' => Some(&[0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F]),
         'H' => Some(&[0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
         'I' => Some(&[0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F]),
+        'J' => Some(&[0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0E]),
         'K' => Some(&[0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11]),
         'L' => Some(&[0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F]),
         'M' => Some(&[0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11]),
         'N' => Some(&[0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11]),
         'O' => Some(&[0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E]),
         'P' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10]),
+        'Q' => Some(&[0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D]),
         'R' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11]),
         'S' => Some(&[0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E]),
         'T' => Some(&[0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04]),
         'U' => Some(&[0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E]),
         'V' => Some(&[0x11, 0x11, 0x11, 0x11, 0x0A, 0x0A, 0x04]),
         'W' => Some(&[0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A]),
+        'X' => Some(&[0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11]),
         'Y' => Some(&[0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04]),
         'Z' => Some(&[0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F]),
+        'a' => Some(&[0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F]),
+        'b' => Some(&[0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x1E]),
+        'c' => Some(&[0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E]),
+        'd' => Some(&[0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F]),
+        'e' => Some(&[0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E]),
+        'f' => Some(&[0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08]),
+        'g' => Some(&[0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E]),
+        'h' => Some(&[0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x11]),
+        'i' => Some(&[0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E]),
+        'j' => Some(&[0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C]),
+        'k' => Some(&[0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12]),
+        'l' => Some(&[0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E]),
+        'm' => Some(&[0x00, 0x00, 0x1A, 0x15, 0x15, 0x15, 0x15]),
+        'n' => Some(&[0x00, 0x00, 0x1E, 0x11, 0x11, 0x11, 0x11]),
+        'o' => Some(&[0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E]),
+        'p' => Some(&[0x00, 0x00, 0x1E, 0x11, 0x1E, 0x10, 0x10]),
+        'q' => Some(&[0x00, 0x00, 0x0F, 0x11, 0x0F, 0x01, 0x01]),
+        'r' => Some(&[0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10]),
+        's' => Some(&[0x00, 0x00, 0x0F, 0x10, 0x0E, 0x01, 0x1E]),
+        't' => Some(&[0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06]),
+        'u' => Some(&[0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D]),
+        'v' => Some(&[0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04]),
+        'w' => Some(&[0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A]),
+        'x' => Some(&[0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11]),
+        'y' => Some(&[0x00, 0x00, 0x11, 0x11, 0x0F, 0x01, 0x0E]),
+        'z' => Some(&[0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F]),
+        '0' => Some(&[0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E]),
+        '1' => Some(&[0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E]),
+        '2' => Some(&[0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F]),
+        '3' => Some(&[0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E]),
+        '4' => Some(&[0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02]),
+        '5' => Some(&[0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E]),
+        '6' => Some(&[0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E]),
+        '7' => Some(&[0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08]),
+        '8' => Some(&[0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E]),
+        '9' => Some(&[0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C]),
+        '!' => Some(&[0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04]),
+        '"' => Some(&[0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00]),
+        '\'' => Some(&[0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00]),
+        '(' => Some(&[0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02]),
+        ')' => Some(&[0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08]),
         '+' => Some(&[0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00]),
+        ',' => Some(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x08]),
         '-' => Some(&[0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00]),
+        '.' => Some(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06]),
+        '/' => Some(&[0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10]),
+        ':' => Some(&[0x00, 0x06, 0x06, 0x00, 0x06, 0x06, 0x00]),
+        ';' => Some(&[0x00, 0x06, 0x06, 0x00, 0x06, 0x04, 0x08]),
+        '=' => Some(&[0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00]),
+        '?' => Some(&[0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04]),
+        '[' => Some(&[0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E]),
+        '\\' => Some(&[0x10, 0x08, 0x08, 0x04, 0x02, 0x02, 0x01]),
+        ']' => Some(&[0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E]),
+        '_' => Some(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F]),
         _ => None,
     }
 }
@@ -550,10 +701,12 @@ fn pixels_u32(pixels: &mut [u8]) -> &mut [u32] {
 mod tests {
     use crate::state::{
         ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
-        StrokeAnnotation,
+        StrokeAnnotation, TextAnnotation,
     };
 
-    use super::{draw_annotation_overlay, draw_spotlight_overlay, fill_rect, paint_zoom_badge};
+    use super::{
+        draw_annotation_overlay, draw_spotlight_overlay, fill_rect, lookup_glyph, paint_zoom_badge,
+    };
 
     #[test]
     fn fill_rect_clips_to_buffer_bounds() {
@@ -592,7 +745,7 @@ mod tests {
             width: 4,
         })];
 
-        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None);
+        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None, None);
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -608,7 +761,7 @@ mod tests {
             width: 4,
         });
 
-        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None);
+        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None, None);
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -622,6 +775,7 @@ mod tests {
             48,
             48,
             &[],
+            None,
             None,
             Some(AnnotationPoint { x: 20, y: 18 }),
         );
@@ -646,5 +800,53 @@ mod tests {
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn annotation_overlay_draws_text_annotations() {
+        let mut pixels = vec![0_u8; 96 * 96 * 4];
+        let text = TextAnnotation {
+            position: AnnotationPoint { x: 10, y: 12 },
+            text: "HELLO".to_owned(),
+            color: 0xFFFF_FFFF,
+            scale: 4,
+        };
+
+        draw_annotation_overlay(
+            &mut pixels,
+            96,
+            96,
+            &[AnnotationItem::Text(text)],
+            None,
+            None,
+            None,
+        );
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn annotation_overlay_draws_lowercase_and_fallback_text() {
+        let mut pixels = vec![0_u8; 160 * 96 * 4];
+        let text = TextAnnotation {
+            position: AnnotationPoint { x: 4, y: 12 },
+            text: "hello é!?".to_owned(),
+            color: 0xFFFF_FFFF,
+            scale: 4,
+        };
+
+        draw_annotation_overlay(
+            &mut pixels,
+            160,
+            96,
+            &[AnnotationItem::Text(text)],
+            None,
+            None,
+            None,
+        );
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+        assert!(lookup_glyph('h').is_some());
+        assert!(lookup_glyph('!').is_some());
     }
 }
