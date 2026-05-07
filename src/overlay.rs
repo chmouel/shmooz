@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use wayland_client::{
     Dispatch, QueueHandle, delegate_noop,
     protocol::{wl_buffer, wl_callback, wl_region, wl_shm, wl_subsurface, wl_surface},
@@ -9,7 +11,7 @@ use crate::{
     shm::ShmBuffer,
     state::{
         ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
-        StrokeAnnotation, TextAnnotation,
+        StrokeAnnotation, TextAnnotation, ToastState,
     },
     window::OverlayBufferSlot,
     zoom::ViewRect,
@@ -17,9 +19,12 @@ use crate::{
 
 const ANNOTATION_BUFFER_COUNT: usize = 3;
 const SPOTLIGHT_MOVE_THRESHOLD_SQ: f64 = 16.0;
-const ZOOM_BADGE_WIDTH: i32 = 480;
-const ZOOM_BADGE_HEIGHT: i32 = 136;
-const ZOOM_BADGE_MARGIN: i32 = 24;
+pub const ZOOM_BADGE_WIDTH: i32 = 480;
+pub const ZOOM_BADGE_HEIGHT: i32 = 136;
+pub const ZOOM_BADGE_MARGIN: i32 = 24;
+const TOAST_WIDTH: i32 = ZOOM_BADGE_WIDTH;
+const TOAST_HEIGHT: i32 = ZOOM_BADGE_HEIGHT;
+const TOAST_DURATION: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
 struct AnnotationBufferKey {
@@ -44,6 +49,7 @@ pub fn create_overlays_for_window(
     create_spotlight_overlay(state, output_id, qh)?;
     create_annotation_overlay(state, output_id, qh)?;
     create_zoom_badge_overlay(state, output_id, qh)?;
+    create_toast_overlay(state, output_id, qh)?;
     update_window_overlays(state, output_id);
 
     Ok(())
@@ -53,6 +59,7 @@ pub fn update_window_overlays(state: &mut AppState, output_id: u32) {
     update_spotlight_overlay(state, output_id);
     update_annotation_overlay(state, output_id);
     update_zoom_badge_overlay(state, output_id);
+    update_toast_overlay(state, output_id);
 }
 
 pub fn update_spotlight_overlays(state: &mut AppState) {
@@ -85,6 +92,34 @@ pub fn refresh_zoom_badge_overlays(state: &mut AppState) {
     let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
     for output_id in output_ids {
         refresh_zoom_badge_overlay(state, output_id);
+    }
+}
+
+pub fn show_toast(state: &mut AppState, output_id: u32, message: impl Into<String>) {
+    let previous_output = state.toast.as_ref().map(|toast| toast.output_id);
+    state.toast = Some(ToastState {
+        output_id,
+        message: message.into(),
+        expires_at: Instant::now() + TOAST_DURATION,
+    });
+
+    if let Some(previous_output) =
+        previous_output.filter(|previous_output| *previous_output != output_id)
+    {
+        set_toast_visible(state, previous_output, false);
+    }
+
+    update_toast_overlay(state, output_id);
+}
+
+pub fn expire_toast(state: &mut AppState) {
+    let expired_output = state
+        .toast
+        .as_ref()
+        .and_then(|toast| (Instant::now() >= toast.expires_at).then_some(toast.output_id));
+    if let Some(output_id) = expired_output {
+        state.toast = None;
+        set_toast_visible(state, output_id, false);
     }
 }
 
@@ -243,6 +278,48 @@ fn create_zoom_badge_overlay(
     Ok(())
 }
 
+fn create_toast_overlay(
+    state: &mut AppState,
+    output_id: u32,
+    qh: &QueueHandle<AppState>,
+) -> Result<()> {
+    if state.globals.subcompositor.is_none() {
+        return Ok(());
+    }
+
+    let compositor = state.globals.compositor()?;
+    let shm = state.globals.shm()?;
+    let subcompositor = state
+        .globals
+        .subcompositor
+        .clone()
+        .ok_or_else(|| AppError::missing_protocol("wl_subcompositor"))?;
+
+    let buffer = ShmBuffer::create(
+        &shm,
+        qh,
+        wl_shm::Format::Argb8888,
+        TOAST_WIDTH,
+        TOAST_HEIGHT,
+        TOAST_WIDTH * 4,
+    )?;
+
+    let surface = compositor.create_surface(qh, ());
+    let subsurface =
+        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
+    make_surface_input_transparent(&compositor, &surface, qh);
+    subsurface.set_desync();
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.toast_buffer = Some(buffer);
+        window.toast_surface = Some(surface);
+        window.toast_subsurface = Some(subsurface);
+    }
+    position_toast_subsurface(state, output_id);
+
+    Ok(())
+}
+
 fn make_surface_input_transparent(
     compositor: &wayland_client::protocol::wl_compositor::WlCompositor,
     surface: &wl_surface::WlSurface,
@@ -381,6 +458,39 @@ fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
     surface.commit();
 }
 
+fn refresh_toast_overlay(state: &mut AppState, output_id: u32) {
+    let message = state
+        .toast
+        .as_ref()
+        .filter(|toast| toast.output_id == output_id)
+        .map(|toast| toast.message.clone());
+    let Some(message) = message else {
+        return;
+    };
+
+    position_toast_subsurface(state, output_id);
+
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return;
+    };
+    let Some(surface) = window.toast_surface.as_ref() else {
+        return;
+    };
+    let Some(buffer) = window.toast_buffer.as_mut() else {
+        return;
+    };
+
+    render::paint_toast(
+        buffer.data.as_mut(),
+        TOAST_WIDTH as usize,
+        TOAST_HEIGHT as usize,
+        &message,
+    );
+    surface.attach(Some(&buffer.wl_buffer), 0, 0);
+    surface.damage(0, 0, TOAST_WIDTH, TOAST_HEIGHT);
+    surface.commit();
+}
+
 fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
     let should_show = state
         .windows
@@ -435,6 +545,25 @@ fn update_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
     set_zoom_badge_visible(state, output_id, should_show);
     if should_show {
         refresh_zoom_badge_overlay(state, output_id);
+    }
+}
+
+fn update_toast_overlay(state: &mut AppState, output_id: u32) {
+    let should_show = state
+        .windows
+        .get(&output_id)
+        .map(|window| {
+            window.toast_surface.is_some()
+                && state
+                    .toast
+                    .as_ref()
+                    .is_some_and(|toast| toast.output_id == output_id)
+        })
+        .unwrap_or(false);
+
+    set_toast_visible(state, output_id, should_show);
+    if should_show {
+        refresh_toast_overlay(state, output_id);
     }
 }
 
@@ -530,6 +659,35 @@ fn set_zoom_badge_visible(state: &mut AppState, output_id: u32, show: bool) {
     }
 }
 
+fn set_toast_visible(state: &mut AppState, output_id: u32, show: bool) {
+    let Some((was_visible, surface)) = state
+        .windows
+        .get(&output_id)
+        .map(|window| (window.toast_visible, window.toast_surface.as_ref().cloned()))
+    else {
+        return;
+    };
+    let Some(surface) = surface else {
+        return;
+    };
+
+    if was_visible == show {
+        return;
+    }
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.toast_visible = show;
+    }
+
+    if show {
+        refresh_toast_overlay(state, output_id);
+    } else {
+        surface.attach(None, 0, 0);
+        surface.damage(0, 0, TOAST_WIDTH, TOAST_HEIGHT);
+        surface.commit();
+    }
+}
+
 fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
     state
         .outputs
@@ -538,9 +696,67 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
         .unwrap_or((0, 0))
 }
 
+fn position_toast_subsurface(state: &AppState, output_id: u32) {
+    let (width, _) = logical_size(state, output_id);
+    let x = (width - TOAST_WIDTH - ZOOM_BADGE_MARGIN).max(0);
+    if let Some(window) = state.windows.get(&output_id)
+        && let Some(subsurface) = window.toast_subsurface.as_ref()
+    {
+        subsurface.set_position(x, ZOOM_BADGE_MARGIN);
+    }
+}
+
 fn cursor_visible_for_output(state: &AppState, output_id: u32) -> bool {
     state.focused_window == Some(output_id)
         || (state.focused_window.is_none() && state.windows.len() == 1)
+}
+
+pub fn draw_annotation_overlay_snapshot(
+    state: &AppState,
+    output_id: u32,
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    let effective_tool = state.effective_annotation_tool();
+    let show_cursor = cursor_visible_for_output(state, output_id);
+
+    let Some(window) = state.windows.get(&output_id) else {
+        pixels.fill(0);
+        return;
+    };
+
+    let cursor = show_cursor.then_some(render::OverlayCursor {
+        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
+        style: if effective_tool == crate::state::AnnotationTool::Move {
+            render::CursorStyle::Hand
+        } else {
+            render::CursorStyle::Crosshair
+        },
+    });
+    let projected_annotations = project_annotations(
+        &window.annotations,
+        window.view_source,
+        width as f64,
+        height as f64,
+    );
+    let projected_active = window.active_annotation.as_ref().map(|annotation| {
+        project_active_annotation(annotation, window.view_source, width as f64, height as f64)
+    });
+    let projected_text = window
+        .active_text
+        .as_ref()
+        .map(|text| project_text_annotation(text, window.view_source, width as f64, height as f64));
+
+    render::draw_annotation_overlay(
+        pixels,
+        width,
+        height,
+        &projected_annotations,
+        projected_active.as_ref(),
+        projected_text.as_ref(),
+        cursor,
+    );
 }
 
 fn project_annotations(

@@ -8,6 +8,8 @@ use crate::state::{
 const BADGE_TITLE_SCALE: usize = 3;
 const BADGE_SUBTITLE_SCALE: usize = 2;
 const BADGE_HINT_SCALE: usize = 2;
+const TOAST_TITLE_SCALE: usize = 2;
+const TOAST_TEXT_SCALE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorStyle {
@@ -222,6 +224,65 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
             line.color,
         );
     }
+}
+
+pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, message: &str) {
+    pixels_u32(pixels).fill(0);
+
+    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
+    fill_rect(pixels, width, height, 0, 0, width, 3, 0xFFFF_C83D);
+    fill_rect(
+        pixels,
+        width,
+        height,
+        0,
+        height.saturating_sub(3),
+        width,
+        3,
+        0xFFFF_C83D,
+    );
+    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    fill_rect(
+        pixels,
+        width,
+        height,
+        18,
+        54,
+        width.saturating_sub(36),
+        1,
+        0x5030_3030,
+    );
+
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        16,
+        "SCREENSHOT SAVED",
+        TOAST_TITLE_SCALE,
+        0xFFFF_FFFF,
+    );
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        40,
+        "NOTIFICATION",
+        TOAST_TEXT_SCALE,
+        0xFFE7_BD73,
+    );
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        68,
+        message,
+        TOAST_TEXT_SCALE,
+        0xFFFF_FFFF,
+    );
 }
 
 fn draw_annotation_item(
@@ -906,7 +967,7 @@ mod tests {
 
     use super::{
         CursorStyle, OverlayCursor, draw_annotation_overlay, draw_spotlight_overlay, fill_rect,
-        lookup_glyph, paint_zoom_badge,
+        lookup_glyph, paint_toast, paint_zoom_badge,
     };
 
     #[test]
@@ -1026,6 +1087,15 @@ mod tests {
                 ],
             },
         );
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn toast_renders_notification_text() {
+        let mut pixels = vec![0_u8; 320 * 32 * 4];
+
+        paint_toast(&mut pixels, 320, 32, "File saved to shot.png");
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }

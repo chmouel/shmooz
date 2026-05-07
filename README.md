@@ -1,8 +1,11 @@
 # `shmooz`
 
-A zoom / magnifier utility for Wayland compositors.
+A zoom / magnifier and screenshot utility for Wayland compositors.
 
 `shmooz` is a zoom / magnifier utility for Wayland compositors written in Rust.
+
+It can also be used as a screenshot tool for the current visible shmooz view, including zoom,
+spotlight, annotations, and the on-screen badge.
 
 It includes an annotation overlay with pen, highlighter, line, text,
 rectangle, ellipse, and move tools, plus undo, clear and other necessary features to
@@ -35,6 +38,7 @@ shmooz [options...]
 * `--zoom-in PERCENT` - Start with an initial zoom (for example `10%` or `0.5`)
 * `--invert-scroll` - Invert scroll direction
 * `--spotlight` - Dim the screen outside a spotlight circle around the pointer
+* `--screenshot-dir DIR` - Directory for saved screenshots (default: `~/Desktop/Screenshots`)
 * `--no-indicator` - Hide the zoom badge
 
 ### Controls
@@ -58,7 +62,8 @@ shmooz [options...]
 * `0` - Restore the original view
 * `d` - Toggle draw mode on the current zoom level
 * `w` - Toggle draw mode without zoom
-* `s` - Toggle spotlight
+* `s` - Save a screenshot of the current visible output
+* `f` - Toggle spotlight
 * `[` / `]` - Decrease / increase spotlight radius
 * `p` - Select pen
 * `h` - Select highlighter
@@ -79,6 +84,8 @@ shmooz [options...]
 * `d` keeps the current zoomed view and lets you draw over it.
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
+* Screenshots save the currently visible output, including zoom, spotlight, annotations, and the badge when it is visible.
+* Screenshots are written to `~/Desktop/Screenshots` by default, or to the directory set with `--screenshot-dir`.
 * Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
 * The on-screen indicator badge shows the current mode, active tool or modifier, and the most relevant actions for the current context.
 
@@ -93,6 +100,9 @@ shmooz --output DP-1
 
 # Enable spotlight from startup
 shmooz --spotlight --zoom-in 25%
+
+# Save screenshots somewhere else
+shmooz --screenshot-dir /tmp/shmooz-shots
 
 # Start and use draw mode after launch with d / w
 cargo run -- --zoom-in 25%

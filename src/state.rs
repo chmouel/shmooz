@@ -46,7 +46,7 @@ impl InteractionMode {
                     BadgeLine::new(
                         "OTHER",
                         format!(
-                            "S spot  [ ] radius  {} close",
+                            "S save  F spot  [ ] radius  {} close",
                             close_key.map(CloseKey::label).unwrap_or("Esc")
                         ),
                         0xFFF4_F4F4,
@@ -527,6 +527,7 @@ pub struct AppState {
     pub focused_window: Option<u32>,
     pub loop_signal: Option<LoopSignal>,
     pub fatal_error: Option<AppError>,
+    pub toast: Option<ToastState>,
     pub spotlight_enabled: bool,
     pub spotlight_radius_frac: f64,
     pub interaction_mode: InteractionMode,
@@ -545,6 +546,12 @@ pub struct KeyboardTextState {
     pub compose: Option<xkb::compose::State>,
 }
 
+pub struct ToastState {
+    pub output_id: u32,
+    pub message: String,
+    pub expires_at: Instant,
+}
+
 impl AppState {
     pub fn new(config: Config) -> Self {
         let spotlight_enabled = config.spotlight;
@@ -557,6 +564,7 @@ impl AppState {
             focused_window: None,
             loop_signal: None,
             fatal_error: None,
+            toast: None,
             spotlight_enabled,
             spotlight_radius_frac: 0.25,
             interaction_mode: InteractionMode::default(),
@@ -645,6 +653,7 @@ mod tests {
             output_filter: None,
             invert_scroll: false,
             spotlight: false,
+            screenshot_dir: "shots".into(),
             show_indicator: true,
         }
     }
@@ -709,13 +718,13 @@ mod tests {
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
-        assert_eq!(badge.lines[2].text, "S spot  [ ] radius  Esc close");
+        assert_eq!(badge.lines[2].text, "S save  F spot  [ ] radius  Esc close");
     }
 
     #[test]
     fn navigate_badge_reflects_remapped_close_key() {
         let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, Some(CloseKey::Q));
 
-        assert_eq!(badge.lines[2].text, "S spot  [ ] radius  Q close");
+        assert_eq!(badge.lines[2].text, "S save  F spot  [ ] radius  Q close");
     }
 }

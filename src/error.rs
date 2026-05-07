@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, path::Path};
 
 use thiserror::Error;
 
@@ -45,6 +45,9 @@ pub enum AppError {
     #[error("failed to capture {output}")]
     CaptureFailed { output: String },
 
+    #[error("failed to save screenshot to {path}: {message}")]
+    ScreenshotSave { path: String, message: String },
+
     #[error("{message}")]
     RuntimeState { message: String },
 }
@@ -56,6 +59,12 @@ pub enum ConfigError {
 
     #[error("invalid zoom percentage: {value} (must be 0-99%)")]
     Zoom { value: String },
+
+    #[error("invalid screenshot directory: {value}")]
+    ScreenshotDirectory { value: String },
+
+    #[error("cannot expand screenshot directory '{path}' because HOME is not set")]
+    HomeDirectoryUnavailable { path: String },
 }
 
 impl AppError {
@@ -92,6 +101,13 @@ impl AppError {
     pub fn runtime(message: impl Into<String>) -> Self {
         Self::RuntimeState {
             message: message.into(),
+        }
+    }
+
+    pub fn screenshot(path: impl AsRef<Path>, err: impl fmt::Display) -> Self {
+        Self::ScreenshotSave {
+            path: path.as_ref().display().to_string(),
+            message: err.to_string(),
         }
     }
 }

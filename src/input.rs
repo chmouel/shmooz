@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wayland_client::{
@@ -8,7 +9,7 @@ use wayland_client::{
 use xkbcommon::xkb;
 
 use crate::{
-    overlay,
+    overlay, screenshot,
     state::{
         ActiveAnnotation, ActiveMove, AnnotationPoint, AnnotationTool, AppState, InteractionMode,
         KeyboardTextState, TextAnnotation,
@@ -80,8 +81,11 @@ const KEYBOARD_ZOOM_STEP: f64 = 10.0;
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const TEXT_ANNOTATION_SCALE: usize = 4;
 const MOVE_HIT_RADIUS: f64 = 12.0;
+const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
 
 pub fn repeat_timer_tick(state: &mut AppState) {
+    overlay::expire_toast(state);
+
     let (Some(key), Some(deadline)) = (state.repeat_key, state.repeat_deadline) else {
         return;
     };
@@ -417,6 +421,16 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         KEY_C => clear_annotations(state),
         KEY_0 | KEY_KP0 if !state.interaction_mode.is_annotating() => restore_focused_window(state),
         KEY_S => {
+            if let Some(output_id) = active_window_id(state) {
+                match screenshot::save_output(state, output_id) {
+                    Ok(path) => {
+                        overlay::show_toast(state, output_id, screenshot_toast_message(&path));
+                    }
+                    Err(err) => state.record_fatal(err),
+                }
+            }
+        }
+        KEY_F => {
             state.spotlight_enabled = !state.spotlight_enabled;
             overlay::update_spotlight_overlays(state);
         }
@@ -836,6 +850,27 @@ fn active_text_output_id(state: &AppState) -> Option<u32> {
     Some(output_id)
 }
 
+fn screenshot_toast_message(path: &Path) -> String {
+    let prefix = "File saved to ";
+    let display = path.display().to_string();
+    let max_path_chars = SCREENSHOT_TOAST_MAX_CHARS.saturating_sub(prefix.chars().count());
+    let shortened = if display.chars().count() <= max_path_chars {
+        display
+    } else {
+        format!(
+            "...{}",
+            tail_chars(&display, max_path_chars.saturating_sub(3))
+        )
+    };
+
+    format!("{prefix}{shortened}")
+}
+
+fn tail_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    text.chars().skip(total.saturating_sub(max_chars)).collect()
+}
+
 fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_change: f64) {
     let logical_size = logical_size(state, output_id);
     let center = screen_center(logical_size);
@@ -997,6 +1032,7 @@ mod tests {
             output_filter: None,
             invert_scroll: false,
             spotlight: false,
+            screenshot_dir: "shots".into(),
             show_indicator: true,
         }
     }

@@ -11,7 +11,8 @@ Controls:
     0                     Restore/unzoom
     d                     Toggle draw mode on current zoom
     w                     Toggle draw-without-zoom mode
-    s                     Toggle spotlight dim overlay
+    s                     Save screenshot
+    f                     Toggle spotlight dim overlay
     [ / ]                 Decrease/increase spotlight radius
 
   Annotation:
@@ -75,6 +76,13 @@ pub struct Cli {
         help = "Dim screen outside a spotlight circle around the pointer"
     )]
     pub spotlight: bool,
+
+    #[arg(
+        long = "screenshot-dir",
+        value_name = "DIR",
+        help = "Directory for saved screenshots (default: ~/Desktop/Screenshots)"
+    )]
+    pub screenshot_dir: Option<String>,
 
     #[arg(long = "no-indicator", help = "Hide the zoom mode indicator badge")]
     pub no_indicator: bool,

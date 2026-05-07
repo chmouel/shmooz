@@ -7,6 +7,7 @@ mod input;
 mod output;
 mod overlay;
 mod render;
+mod screenshot;
 mod shm;
 mod state;
 mod wayland;
