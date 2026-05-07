@@ -197,13 +197,24 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
 }
 
 fn focus_surface(state: &mut AppState, surface: &wl_surface::WlSurface, x: f64, y: f64) {
+    let previous_focus = state.focused_window;
+    let mut focus_changed = false;
+    let mut focused_output = None;
     for (output_id, window) in &mut state.windows {
         if &window.surface == surface {
             state.focused_window = Some(*output_id);
             window.pointer_x = x;
             window.pointer_y = y;
-            return;
+            focus_changed = previous_focus != state.focused_window;
+            focused_output = Some(*output_id);
+            break;
         }
+    }
+
+    if focus_changed {
+        overlay::update_annotation_overlays(state);
+    } else if let Some(output_id) = focused_output {
+        overlay::refresh_annotation_overlay(state, output_id);
     }
 }
 
@@ -258,6 +269,7 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
         window.pointer_y = y;
     }
 
+    overlay::refresh_annotation_overlay(state, output_id);
     overlay::refresh_spotlight_for_motion(state, output_id, delta_x, delta_y);
 }
 
@@ -280,10 +292,12 @@ fn pointer_button(
                     start_annotation(state, output_id);
                 }
             }
-            BTN_LEFT if button_state == wl_pointer::ButtonState::Released
-                && state.annotation_tool != AnnotationTool::Text => {
-                    finish_annotation(state, output_id);
-                }
+            BTN_LEFT
+                if button_state == wl_pointer::ButtonState::Released
+                    && state.annotation_tool != AnnotationTool::Text =>
+            {
+                finish_annotation(state, output_id);
+            }
             BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
                 state.request_exit();
             }
@@ -363,7 +377,8 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         && state.interaction_mode.is_annotating()
         && state
             .config
-            .close_key.is_none_or(|close_key| close_key.key_code() != KEY_ESC)
+            .close_key
+            .is_none_or(|close_key| close_key.key_code() != KEY_ESC)
     {
         set_interaction_mode(state, InteractionMode::Navigate);
         return;
@@ -486,9 +501,10 @@ fn start_annotation(state: &mut AppState, output_id: u32) {
 fn update_active_annotation(state: &mut AppState, output_id: u32, x: f64, y: f64) {
     let point = screen_to_annotation_point(state, output_id, x, y);
     if let Some(window) = state.windows.get_mut(&output_id)
-        && let Some(active_annotation) = window.active_annotation.as_mut() {
-            active_annotation.update(point);
-        }
+        && let Some(active_annotation) = window.active_annotation.as_mut()
+    {
+        active_annotation.update(point);
+    }
     overlay::refresh_annotation_overlay(state, output_id);
 }
 
@@ -502,9 +518,10 @@ fn finish_annotation(state: &mut AppState, output_id: u32) {
     });
 
     if let Some(annotation) = completed
-        && let Some(window) = state.windows.get_mut(&output_id) {
-            window.annotations.push(annotation);
-        }
+        && let Some(window) = state.windows.get_mut(&output_id)
+    {
+        window.annotations.push(annotation);
+    }
 
     overlay::update_annotation_overlays(state);
 }
@@ -541,9 +558,10 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
         KEY_ENTER => commit_or_discard_active_text_entry(state, output_id),
         KEY_BACKSPACE => {
             if let Some(window) = state.windows.get_mut(&output_id)
-                && let Some(text) = window.active_text.as_mut() {
-                    text.text.pop();
-                }
+                && let Some(text) = window.active_text.as_mut()
+            {
+                text.text.pop();
+            }
             overlay::refresh_annotation_overlay(state, output_id);
         }
         KEY_ESC => {
@@ -556,9 +574,10 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
             if let Some(text_input) = current_text_input(state, key) {
                 if let Some(window) = state.windows.get_mut(&output_id)
                     && let Some(text) = window.active_text.as_mut()
-                        && text.text.chars().count() + text_input.chars().count() <= 64 {
-                            text.text.push_str(&text_input);
-                        }
+                    && text.text.chars().count() + text_input.chars().count() <= 64
+                {
+                    text.text.push_str(&text_input);
+                }
                 overlay::refresh_annotation_overlay(state, output_id);
             } else {
                 overlay::refresh_annotation_overlay(state, output_id);
@@ -576,11 +595,12 @@ fn commit_or_discard_active_text_entry(state: &mut AppState, output_id: u32) {
         .and_then(|window| window.active_text.take());
 
     if let Some(entry) = entry.filter(|entry| !entry.text.is_empty())
-        && let Some(window) = state.windows.get_mut(&output_id) {
-            window
-                .annotations
-                .push(crate::state::AnnotationItem::Text(entry));
-        }
+        && let Some(window) = state.windows.get_mut(&output_id)
+    {
+        window
+            .annotations
+            .push(crate::state::AnnotationItem::Text(entry));
+    }
 
     overlay::update_annotation_overlays(state);
 }

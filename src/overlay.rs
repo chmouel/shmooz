@@ -262,7 +262,7 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     if width <= 0 || height <= 0 {
         return;
     }
-    let show_cursor = state.interaction_mode.is_annotating();
+    let show_cursor = cursor_visible_for_output(state, output_id);
 
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
@@ -393,7 +393,8 @@ fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
         .get(&output_id)
         .map(|window| {
             window.annotation_surface.is_some()
-                && (state.interaction_mode.is_annotating()
+                && (cursor_visible_for_output(state, output_id)
+                    || state.interaction_mode.is_annotating()
                     || !window.annotations.is_empty()
                     || window.active_annotation.is_some()
                     || window.active_text.is_some())
@@ -517,6 +518,11 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
         .get(&output_id)
         .map(|output| output.logical_size())
         .unwrap_or((0, 0))
+}
+
+fn cursor_visible_for_output(state: &AppState, output_id: u32) -> bool {
+    state.focused_window == Some(output_id)
+        || (state.focused_window.is_none() && state.windows.len() == 1)
 }
 
 fn project_annotations(
@@ -660,9 +666,10 @@ impl Dispatch<wl_buffer::WlBuffer, AnnotationBufferKey> for AppState {
     ) {
         if let wl_buffer::Event::Release = event {
             if let Some(window) = state.windows.get_mut(&key.output_id)
-                && let Some(slot) = window.annotation_buffers.get_mut(key.slot) {
-                    slot.busy = false;
-                }
+                && let Some(slot) = window.annotation_buffers.get_mut(key.slot)
+            {
+                slot.busy = false;
+            }
             flush_annotation_overlay(state, key.output_id);
         }
     }
