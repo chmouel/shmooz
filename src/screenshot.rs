@@ -11,8 +11,7 @@ use wayland_client::protocol::wl_shm;
 
 use crate::{
     error::{AppError, Result},
-    overlay::{self, ZOOM_BADGE_HEIGHT, ZOOM_BADGE_MARGIN, ZOOM_BADGE_WIDTH},
-    render,
+    overlay, render,
     state::AppState,
     zoom::ViewRect,
 };
@@ -23,12 +22,6 @@ struct SourceFrame<'a> {
     height: usize,
     stride: usize,
     format: SourcePixelFormat,
-}
-
-struct OverlayImage<'a> {
-    pixels: &'a [u32],
-    width: usize,
-    height: usize,
 }
 
 struct RenderedScreenshot {
@@ -146,29 +139,6 @@ fn render_output(state: &AppState, output_id: u32) -> Result<RenderedScreenshot>
             logical_height,
         );
         blend_full_frame(&mut frame, cast_slice::<u8, u32>(&annotations));
-    }
-
-    if window.zoom_badge_visible {
-        let mut badge = vec![0u8; ZOOM_BADGE_WIDTH as usize * ZOOM_BADGE_HEIGHT as usize * 4];
-        let badge_model = state
-            .interaction_mode
-            .badge(state.effective_annotation_tool(), state.config.close_key);
-        render::paint_zoom_badge(
-            badge.as_mut_slice(),
-            ZOOM_BADGE_WIDTH as usize,
-            ZOOM_BADGE_HEIGHT as usize,
-            &badge_model,
-        );
-        blend_region(
-            &mut frame,
-            (logical_width, logical_height),
-            (ZOOM_BADGE_MARGIN as usize, ZOOM_BADGE_MARGIN as usize),
-            OverlayImage {
-                pixels: cast_slice::<u8, u32>(&badge),
-                width: ZOOM_BADGE_WIDTH as usize,
-                height: ZOOM_BADGE_HEIGHT as usize,
-            },
-        );
     }
 
     Ok(RenderedScreenshot {
@@ -289,37 +259,6 @@ fn blend_samples(left: u32, right: u32, amount: f64) -> u32 {
 fn blend_full_frame(destination: &mut [u32], overlay: &[u32]) {
     for (destination_pixel, overlay_pixel) in destination.iter_mut().zip(overlay.iter().copied()) {
         *destination_pixel = render::alpha_over(*destination_pixel, overlay_pixel);
-    }
-}
-
-fn blend_region(
-    destination: &mut [u32],
-    destination_size: (usize, usize),
-    offset: (usize, usize),
-    overlay: OverlayImage<'_>,
-) {
-    let (destination_width, destination_height) = destination_size;
-    let (offset_x, offset_y) = offset;
-
-    for y in 0..overlay.height {
-        let destination_y = offset_y + y;
-        if destination_y >= destination_height {
-            break;
-        }
-
-        for x in 0..overlay.width {
-            let destination_x = offset_x + x;
-            if destination_x >= destination_width {
-                break;
-            }
-
-            let destination_index = destination_y * destination_width + destination_x;
-            let overlay_index = y * overlay.width + x;
-            destination[destination_index] = render::alpha_over(
-                destination[destination_index],
-                overlay.pixels[overlay_index],
-            );
-        }
     }
 }
 

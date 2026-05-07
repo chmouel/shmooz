@@ -5,7 +5,7 @@ A zoom / magnifier and screenshot utility for Wayland compositors.
 `shmooz` is a zoom / magnifier utility for Wayland compositors written in Rust.
 
 It can also be used as a screenshot tool for the current visible shmooz view, including zoom,
-spotlight, annotations, and the on-screen badge.
+spotlight, and annotations.
 
 It includes an annotation overlay with pen, highlighter, line, text,
 rectangle, ellipse, and move tools, plus undo, clear and other necessary features to
@@ -85,7 +85,7 @@ shmooz [options...]
 * `d` keeps the current zoomed view and lets you draw over it.
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
-* Screenshots save the currently visible output, including zoom, spotlight, annotations, and the badge when it is visible.
+* Screenshots save the currently visible output, including zoom, spotlight, and annotations.
 * `Ctrl+C` copies that same visible output to the regular Wayland clipboard as a PNG without saving a file.
 * Screenshots are written to `~/Desktop/Screenshots` by default, or to the directory set with `--screenshot-dir`.
 * Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
