@@ -5,7 +5,7 @@ A zoom / magnifier utility for Wayland compositors.
 `shmooz` is a zoom / magnifier utility for Wayland compositors written in Rust.
 
 It includes an annotation overlay with pen, highlighter, line, text,
-rectangle, and ellipse tools, plus undo, clear and other necessary features to
+rectangle, ellipse, and move tools, plus undo, clear and other necessary features to
 make it a useful presentation tool.
 
 ## Usage
@@ -50,6 +50,7 @@ shmooz [options...]
 * `[` / `]` - Decrease / increase spotlight radius
 * `p` - Select pen
 * `h` - Select highlighter
+* `m` - Select move and drag an existing annotation
 * `t` - Select text
 * `l` - Select line
 * `r` - Select rectangle

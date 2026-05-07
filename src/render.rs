@@ -8,6 +8,18 @@ use crate::state::{
 const BADGE_TITLE_SCALE: usize = 3;
 const BADGE_HINT_SCALE: usize = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorStyle {
+    Crosshair,
+    Hand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayCursor {
+    pub position: AnnotationPoint,
+    pub style: CursorStyle,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn fill_rect(
     pixels: &mut [u8],
@@ -92,7 +104,7 @@ pub fn draw_annotation_overlay(
     annotations: &[AnnotationItem],
     active_annotation: Option<&ActiveAnnotation>,
     active_text: Option<&TextAnnotation>,
-    cursor: Option<AnnotationPoint>,
+    cursor: Option<OverlayCursor>,
 ) {
     let pixels = pixels_u32(pixels);
     pixels.fill(0);
@@ -264,7 +276,14 @@ fn draw_shape(pixels: &mut [u32], width: usize, height: usize, shape: &ShapeAnno
     }
 }
 
-fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
+fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: OverlayCursor) {
+    match cursor.style {
+        CursorStyle::Crosshair => draw_crosshair_cursor(pixels, width, height, cursor.position),
+        CursorStyle::Hand => draw_hand_cursor(pixels, width, height, cursor.position),
+    }
+}
+
+fn draw_crosshair_cursor(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
     draw_line(
         pixels,
         width,
@@ -310,6 +329,156 @@ fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: A
         2,
     );
     draw_disc(pixels, width, height, cursor.x, cursor.y, 4, 0xFFFF_C83D);
+}
+
+fn draw_hand_cursor(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
+    const OUTLINE: u32 = 0xFF00_0000;
+    const FILL: u32 = 0xFFFF_FFFF;
+    const ACCENT: u32 = 0xFFFF_C83D;
+
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x - 2,
+        cursor.y,
+        5,
+        13,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x + 2,
+        cursor.y + 3,
+        4,
+        11,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x + 5,
+        cursor.y + 5,
+        4,
+        10,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x + 8,
+        cursor.y + 7,
+        4,
+        8,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x - 2,
+        cursor.y + 12,
+        14,
+        10,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x - 8,
+        cursor.y + 12,
+        7,
+        5,
+        OUTLINE,
+        FILL,
+    );
+    draw_box(
+        pixels,
+        width,
+        height,
+        cursor.x - 10,
+        cursor.y + 15,
+        8,
+        5,
+        OUTLINE,
+        FILL,
+    );
+    fill_rect_i32(
+        pixels,
+        width,
+        height,
+        cursor.x + 1,
+        cursor.y + 15,
+        6,
+        3,
+        ACCENT,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_box(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    box_width: usize,
+    box_height: usize,
+    outline: u32,
+    fill: u32,
+) {
+    fill_rect_i32(pixels, width, height, x, y, box_width, box_height, outline);
+    if box_width > 2 && box_height > 2 {
+        fill_rect_i32(
+            pixels,
+            width,
+            height,
+            x + 1,
+            y + 1,
+            box_width - 2,
+            box_height - 2,
+            fill,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_rect_i32(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: i32,
+    y: i32,
+    rect_width: usize,
+    rect_height: usize,
+    color: u32,
+) {
+    let x0 = x.max(0) as usize;
+    let y0 = y.max(0) as usize;
+    let x1 = x.saturating_add(rect_width as i32).max(0) as usize;
+    let y1 = y.saturating_add(rect_height as i32).max(0) as usize;
+    fill_rect_pixels(
+        pixels,
+        width,
+        height,
+        x0.min(width),
+        y0.min(height),
+        x1.saturating_sub(x0)
+            .min(width.saturating_sub(x0.min(width))),
+        y1.saturating_sub(y0)
+            .min(height.saturating_sub(y0.min(height))),
+        color,
+    );
 }
 
 fn draw_text_annotation(pixels: &mut [u32], width: usize, height: usize, text: &TextAnnotation) {
@@ -705,7 +874,8 @@ mod tests {
     };
 
     use super::{
-        draw_annotation_overlay, draw_spotlight_overlay, fill_rect, lookup_glyph, paint_zoom_badge,
+        CursorStyle, OverlayCursor, draw_annotation_overlay, draw_spotlight_overlay, fill_rect,
+        lookup_glyph, paint_zoom_badge,
     };
 
     #[test]
@@ -777,10 +947,34 @@ mod tests {
             &[],
             None,
             None,
-            Some(AnnotationPoint { x: 20, y: 18 }),
+            Some(OverlayCursor {
+                position: AnnotationPoint { x: 20, y: 18 },
+                style: CursorStyle::Crosshair,
+            }),
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn annotation_overlay_draws_move_hand_cursor() {
+        let mut pixels = vec![0_u8; 64 * 64 * 4];
+
+        draw_annotation_overlay(
+            &mut pixels,
+            64,
+            64,
+            &[],
+            None,
+            None,
+            Some(OverlayCursor {
+                position: AnnotationPoint { x: 20, y: 12 },
+                style: CursorStyle::Hand,
+            }),
+        );
+
+        let hotspot = &pixels[(12 * 64 + 20) * 4..(12 * 64 + 21) * 4];
+        assert_eq!(hotspot, &0xFF00_0000_u32.to_ne_bytes());
     }
 
     #[test]

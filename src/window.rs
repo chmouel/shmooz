@@ -10,7 +10,7 @@ use crate::{
     overlay,
     shm::ShmBuffer,
     state::AppState,
-    state::{ActiveAnnotation, AnnotationItem, TextAnnotation},
+    state::{ActiveAnnotation, ActiveMove, AnnotationItem, TextAnnotation},
     zoom::{Size, ViewRect, apply_zoom, aspect_ratio, clamp_view},
 };
 
@@ -44,6 +44,7 @@ pub struct WindowState {
     pub zoom_badge_visible: bool,
     pub annotations: Vec<AnnotationItem>,
     pub active_annotation: Option<ActiveAnnotation>,
+    pub active_move: Option<ActiveMove>,
     pub active_text: Option<TextAnnotation>,
     pub view_source: ViewRect,
     pub initial_view_source: ViewRect,
@@ -153,6 +154,7 @@ pub fn create_window_for_output(
             zoom_badge_visible: false,
             annotations: Vec::new(),
             active_annotation: None,
+            active_move: None,
             active_text: None,
             view_source: initial_view_source,
             initial_view_source,

@@ -19,6 +19,7 @@ Controls:
     Left click            Place text when text tool is selected
     p                     Pen
     h                     Highlighter
+    m                     Toggle move mode for existing annotations
     t                     Text
     l                     Line
     r                     Rectangle

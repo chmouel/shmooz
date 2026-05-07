@@ -262,6 +262,7 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     if width <= 0 || height <= 0 {
         return;
     }
+    let effective_tool = state.effective_annotation_tool();
     let show_cursor = cursor_visible_for_output(state, output_id);
 
     let Some(window) = state.windows.get_mut(&output_id) else {
@@ -285,7 +286,14 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     else {
         return;
     };
-    let cursor = show_cursor.then_some(AnnotationPoint::new(window.pointer_x, window.pointer_y));
+    let cursor = show_cursor.then_some(render::OverlayCursor {
+        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
+        style: if effective_tool == crate::state::AnnotationTool::Move {
+            render::CursorStyle::Hand
+        } else {
+            render::CursorStyle::Crosshair
+        },
+    });
     let projected_annotations = project_annotations(
         &window.annotations,
         window.view_source,
@@ -348,8 +356,9 @@ fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
 }
 
 fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
-    let title = state.interaction_mode.badge_title(state.annotation_tool);
-    let hints = state.interaction_mode.badge_hints();
+    let effective_tool = state.effective_annotation_tool();
+    let title = state.interaction_mode.badge_title(effective_tool);
+    let hints = state.interaction_mode.badge_hints(effective_tool);
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
     };
