@@ -1,11 +1,12 @@
 use bytemuck::cast_slice_mut;
 
 use crate::state::{
-    ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
-    StrokeAnnotation, TextAnnotation,
+    ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, BadgeModel,
+    ShapeAnnotation, StrokeAnnotation, TextAnnotation,
 };
 
 const BADGE_TITLE_SCALE: usize = 3;
+const BADGE_SUBTITLE_SCALE: usize = 2;
 const BADGE_HINT_SCALE: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,13 +130,7 @@ pub fn draw_annotation_overlay(
     }
 }
 
-pub fn paint_zoom_badge(
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    title: &str,
-    hints: [&str; 3],
-) {
+pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &BadgeModel) {
     pixels_u32(pixels).fill(0);
 
     fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
@@ -150,14 +145,45 @@ pub fn paint_zoom_badge(
         3,
         0xFFFF_C83D,
     );
+    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    fill_rect(
+        pixels,
+        width,
+        height,
+        18,
+        52,
+        width.saturating_sub(36),
+        1,
+        0x5030_3030,
+    );
+    fill_rect(
+        pixels,
+        width,
+        height,
+        18,
+        80,
+        width.saturating_sub(36),
+        1,
+        0x4430_3030,
+    );
+    fill_rect(
+        pixels,
+        width,
+        height,
+        18,
+        104,
+        width.saturating_sub(36),
+        1,
+        0x4430_3030,
+    );
 
     draw_label(
         pixels,
         width,
         height,
         18,
-        16,
-        title,
+        12,
+        &badge.title,
         BADGE_TITLE_SCALE,
         0xFFFF_FFFF,
     );
@@ -166,31 +192,36 @@ pub fn paint_zoom_badge(
         width,
         height,
         18,
-        58,
-        hints[0],
-        BADGE_HINT_SCALE,
-        0xFFFF_C83D,
+        34,
+        &badge.subtitle,
+        BADGE_SUBTITLE_SCALE,
+        0xFFE7_BD73,
     );
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        82,
-        hints[1],
-        BADGE_HINT_SCALE,
-        0xFFF4_F4F4,
-    );
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        106,
-        hints[2],
-        BADGE_HINT_SCALE,
-        0xFFF4_F4F4,
-    );
+
+    let row_y = [60, 84, 108];
+    for (index, line) in badge.lines.iter().enumerate() {
+        let y = row_y[index];
+        draw_label(
+            pixels,
+            width,
+            height,
+            18,
+            y,
+            line.label,
+            BADGE_HINT_SCALE,
+            0xFFFF_C83D,
+        );
+        draw_label(
+            pixels,
+            width,
+            height,
+            88,
+            y,
+            &line.text,
+            BADGE_HINT_SCALE,
+            line.color,
+        );
+    }
 }
 
 fn draw_annotation_item(
@@ -869,8 +900,8 @@ fn pixels_u32(pixels: &mut [u8]) -> &mut [u32] {
 #[cfg(test)]
 mod tests {
     use crate::state::{
-        ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
-        StrokeAnnotation, TextAnnotation,
+        ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, BadgeLine,
+        BadgeModel, ShapeAnnotation, StrokeAnnotation, TextAnnotation,
     };
 
     use super::{
@@ -985,12 +1016,15 @@ mod tests {
             &mut pixels,
             480,
             136,
-            "DRAW PEN",
-            [
-                "P PEN  H HILITE  L LINE",
-                "R RECT  E ELLIPSE  U UNDO",
-                "C CLEAR  ESC BACK",
-            ],
+            &BadgeModel {
+                title: "DRAW".to_owned(),
+                subtitle: "Tool: PEN".to_owned(),
+                lines: [
+                    BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
+                    BadgeLine::new("TOOL", "P/H paint  L/R/E shape", 0xFFF4_F4F4),
+                    BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc done", 0xFFF4_F4F4),
+                ],
+            },
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));

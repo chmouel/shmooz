@@ -36,8 +36,8 @@ shmooz [options...]
 
 **Annotation mode mouse:**
 
-* Left click + drag - Draw with the selected annotation tool
-* Left click - Place a text annotation when the text tool is selected
+* Left click + drag - Draw with the active draw tool, or move an annotation while move mode is active
+* Left click - Place a text annotation when text mode is active
 
 **Keyboard:**
 
@@ -50,8 +50,8 @@ shmooz [options...]
 * `[` / `]` - Decrease / increase spotlight radius
 * `p` - Select pen
 * `h` - Select highlighter
-* `m` - Select move and drag an existing annotation
-* `t` - Select text
+* `m` - Toggle move mode to drag an existing annotation
+* `t` - Toggle text mode, then click to place text
 * `l` - Select line
 * `r` - Select rectangle
 * `e` - Select ellipse
@@ -59,7 +59,7 @@ shmooz [options...]
 * `Backspace` - Delete the last typed text character
 * `u` - Undo the last annotation on the focused output
 * `c` - Clear annotations on the focused output
-* `Esc` - Leave annotation mode, or exit by default when navigating
+* `Esc` - Leave the active text/move modifier first, then leave annotation mode, or exit by default when navigating
 
 ### Annotation behavior
 
@@ -68,7 +68,7 @@ shmooz [options...]
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
 * Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
-* The on-screen indicator badge shows the current mode and the most important draw shortcuts.
+* The on-screen indicator badge shows the current mode, active tool or modifier, and the most relevant actions for the current context.
 
 ### Examples
 

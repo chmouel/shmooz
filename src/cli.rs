@@ -15,12 +15,12 @@ Controls:
     [ / ]                 Decrease/increase spotlight radius
 
   Annotation:
-    Left click + drag     Draw with selected tool
-    Left click            Place text when text tool is selected
+    Left click + drag     Draw, or move annotations while move mode is active
+    Left click            Place text when text mode is active
     p                     Pen
     h                     Highlighter
     m                     Toggle move mode for existing annotations
-    t                     Toggle text mode
+    t                     Toggle text mode and place text with click
     l                     Line
     r                     Rectangle
     e                     Ellipse
@@ -28,7 +28,7 @@ Controls:
     Backspace             Delete last text character
     u                     Undo last annotation
     c                     Clear annotations
-    Esc                   Return to navigation
+    Esc                   Leave active mod, then return to navigation
 
   Global:
     Right click           Exit

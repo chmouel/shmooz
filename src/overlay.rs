@@ -357,8 +357,7 @@ fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
 
 fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
     let effective_tool = state.effective_annotation_tool();
-    let title = state.interaction_mode.badge_title(effective_tool);
-    let hints = state.interaction_mode.badge_hints(effective_tool);
+    let badge = state.interaction_mode.badge(effective_tool);
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
     };
@@ -373,8 +372,7 @@ fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
         buffer.data.as_mut(),
         ZOOM_BADGE_WIDTH as usize,
         ZOOM_BADGE_HEIGHT as usize,
-        &title,
-        hints,
+        &badge,
     );
     surface.attach(Some(&buffer.wl_buffer), 0, 0);
     surface.damage(0, 0, ZOOM_BADGE_WIDTH, ZOOM_BADGE_HEIGHT);

@@ -35,38 +35,78 @@ impl InteractionMode {
         !matches!(self, Self::Navigate)
     }
 
-    pub fn badge_title(self, tool: AnnotationTool) -> String {
+    pub fn badge(self, tool: AnnotationTool) -> BadgeModel {
         match self {
-            Self::Navigate => "NAVIGATE".to_owned(),
-            Self::AnnotateZoomed => format!("DRAW {}", tool.label()),
-            Self::AnnotateUnzoomed => format!("DRAW NO ZOOM {}", tool.label()),
+            Self::Navigate => BadgeModel {
+                title: "NAVIGATE".to_owned(),
+                subtitle: "View controls and quick entry points".to_owned(),
+                lines: [
+                    BadgeLine::new("MODE", "D draw  W draw no zoom", 0xFFFF_C83D),
+                    BadgeLine::new("VIEW", "+/- zoom  arrows pan  0 reset", 0xFFF4_F4F4),
+                    BadgeLine::new("OTHER", "S spot  [ ] radius  Esc close", 0xFFF4_F4F4),
+                ],
+            },
+            Self::AnnotateZoomed | Self::AnnotateUnzoomed => match tool {
+                AnnotationTool::Move => BadgeModel {
+                    title: self.annotate_badge_title().to_owned(),
+                    subtitle: "Modifier: MOVE".to_owned(),
+                    lines: [
+                        BadgeLine::new("DRAG", "Drag existing annotation", 0xFFFF_C83D),
+                        BadgeLine::new("NEXT", "P/H/L/R/E draw  T text", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "U undo  C clear  Esc done", 0xFFF4_F4F4),
+                    ],
+                },
+                AnnotationTool::Text => BadgeModel {
+                    title: self.annotate_badge_title().to_owned(),
+                    subtitle: "Modifier: TEXT".to_owned(),
+                    lines: [
+                        BadgeLine::new("PLACE", "Click to place text", 0xFFFF_C83D),
+                        BadgeLine::new("TEXT", "Type  Bksp delete  Enter commit", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "M move  U undo  C clear  Esc done", 0xFFF4_F4F4),
+                    ],
+                },
+                _ => BadgeModel {
+                    title: self.annotate_badge_title().to_owned(),
+                    subtitle: format!("Tool: {}", tool.label()),
+                    lines: [
+                        BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
+                        BadgeLine::new("TOOL", "P/H paint  L/R/E shape", 0xFFF4_F4F4),
+                        BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc done", 0xFFF4_F4F4),
+                    ],
+                },
+            },
         }
     }
 
-    pub fn badge_hints(self, tool: AnnotationTool) -> [&'static str; 3] {
+    fn annotate_badge_title(self) -> &'static str {
         match self {
-            Self::Navigate => [
-                "D DRAW  W DRAW NO ZOOM",
-                "+ - ZOOM  ARROWS PAN",
-                "S SPOT  ESC CLOSE",
-            ],
-            Self::AnnotateZoomed | Self::AnnotateUnzoomed => match tool {
-                AnnotationTool::Move => [
-                    "M EXIT MOVE  P PEN  H HILITE",
-                    "T TEXT  L LINE  R RECT  E ELL",
-                    "U UNDO  C CLEAR  ESC BACK",
-                ],
-                AnnotationTool::Text => [
-                    "T EXIT TEXT  P PEN  H HILITE",
-                    "M MOVE  L LINE  R RECT  E ELL",
-                    "U UNDO  C CLEAR  ENTER COMMIT",
-                ],
-                _ => [
-                    "P PEN  H HILITE  M MOVE",
-                    "T TEXT  L LINE  R RECT  E ELL",
-                    "U UNDO  C CLEAR  ENTER COMMIT",
-                ],
-            },
+            Self::AnnotateZoomed => "DRAW",
+            Self::AnnotateUnzoomed => "DRAW NO ZOOM",
+            Self::Navigate => "NAVIGATE",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BadgeModel {
+    pub title: String,
+    pub subtitle: String,
+    pub lines: [BadgeLine; 3],
+}
+
+#[derive(Debug, Clone)]
+pub struct BadgeLine {
+    pub label: &'static str,
+    pub text: String,
+    pub color: u32,
+}
+
+impl BadgeLine {
+    pub fn new(label: &'static str, text: impl Into<String>, color: u32) -> Self {
+        Self {
+            label,
+            text: text.into(),
+            color,
         }
     }
 }
