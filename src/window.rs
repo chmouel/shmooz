@@ -338,8 +338,3 @@ pub fn attach_output_buffer(state: &AppState, output_id: u32) {
 
     window.surface.attach(Some(&buffer.wl_buffer), 0, 0);
 }
-
-pub fn is_zoomed(window: &WindowState) -> bool {
-    window.view_source.width < window.initial_view_source.width - 0.5
-        || window.view_source.height < window.initial_view_source.height - 0.5
-}

@@ -11,7 +11,7 @@ use crate::{
         ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
         StrokeAnnotation, TextAnnotation,
     },
-    window::{self, OverlayBufferSlot},
+    window::OverlayBufferSlot,
     zoom::ViewRect,
 };
 
@@ -384,14 +384,23 @@ fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
         .windows
         .get(&output_id)
         .map(|window| {
-            window.spotlight_surface.is_some()
-                && window::is_zoomed(window)
-                && state.spotlight_enabled
-                && !state.interaction_mode.is_annotating()
+            spotlight_overlay_should_show(
+                window.spotlight_surface.is_some(),
+                state.spotlight_enabled,
+                state.interaction_mode.is_annotating(),
+            )
         })
         .unwrap_or(false);
 
     set_spotlight_overlay_visible(state, output_id, should_show);
+}
+
+fn spotlight_overlay_should_show(
+    has_surface: bool,
+    spotlight_enabled: bool,
+    annotating: bool,
+) -> bool {
+    has_surface && spotlight_enabled && !annotating
 }
 
 fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
@@ -704,7 +713,7 @@ impl Dispatch<wl_callback::WlCallback, AnnotationFrameKey> for AppState {
 mod tests {
     use crate::{state::AnnotationPoint, zoom::ViewRect};
 
-    use super::project_point;
+    use super::{project_point, spotlight_overlay_should_show};
 
     #[test]
     fn project_point_tracks_view_source_changes() {
@@ -727,6 +736,18 @@ mod tests {
 
         assert_eq!(zoomed_screen, AnnotationPoint { x: 400, y: 200 });
         assert_eq!(full_screen, AnnotationPoint { x: 300, y: 150 });
+    }
+
+    #[test]
+    fn spotlight_overlay_can_show_without_zoom() {
+        assert!(spotlight_overlay_should_show(true, true, false));
+    }
+
+    #[test]
+    fn spotlight_overlay_requires_surface_and_navigation_mode() {
+        assert!(!spotlight_overlay_should_show(false, true, false));
+        assert!(!spotlight_overlay_should_show(true, false, false));
+        assert!(!spotlight_overlay_should_show(true, true, true));
     }
 }
 

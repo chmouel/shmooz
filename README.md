@@ -22,7 +22,7 @@ shmooz [options...]
 * `--output NAME` - Run on a specific output (e.g. `DP-1`)
 * `--zoom-in PERCENT` - Start with an initial zoom (for example `10%` or `0.5`)
 * `--invert-scroll` - Invert scroll direction
-* `--spotlight` - Dim the screen outside a circle when zoomed
+* `--spotlight` - Dim the screen outside a spotlight circle around the pointer
 * `--no-indicator` - Hide the zoom badge
 
 ### Controls

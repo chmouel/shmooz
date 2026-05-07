@@ -78,7 +78,7 @@ pub struct Cli {
 
     #[arg(
         long = "spotlight",
-        help = "Dim screen outside a spotlight circle when zoomed"
+        help = "Dim screen outside a spotlight circle around the pointer"
     )]
     pub spotlight: bool,
 
