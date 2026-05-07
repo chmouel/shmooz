@@ -8,12 +8,25 @@ It includes an annotation overlay with pen, highlighter, line, text,
 rectangle, ellipse, and move tools, plus undo, clear and other necessary features to
 make it a useful presentation tool.
 
+### Screenshots
+
+* Zoom with mouse
+
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/a1a96fac-578f-4baf-bdee-f01ee9299244" />
+
+* Zoom with Spotlight
+
+<img width="3831" height="2160" alt="image" src="https://github.com/user-attachments/assets/289c925d-b771-4a31-9f84-4bfe24d947cb" />
+
+* Annotate image 
+
+<img width="3322" height="1851" alt="CopyQ qCHygC" src="https://github.com/user-attachments/assets/ee604e72-f1cc-4403-9f1c-350b7d1c8043" />
+
 ## Usage
 
 ```sh
 shmooz [options...]
 ```
-
 ### Options
 
 * `-h, --help` - Show help message and quit
