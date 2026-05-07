@@ -1,6 +1,6 @@
 use wayland_client::{
     Dispatch, QueueHandle, delegate_noop,
-    protocol::{wl_subsurface, wl_surface},
+    protocol::{wl_callback, wl_subsurface, wl_surface},
 };
 use wayland_protocols::wp::viewporter::client::wp_viewport;
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -10,10 +10,16 @@ use crate::{
     overlay,
     shm::ShmBuffer,
     state::AppState,
+    state::{ActiveAnnotation, AnnotationItem},
     zoom::{Size, ViewRect, apply_zoom, aspect_ratio, clamp_view},
 };
 
 pub const APP_TITLE: &str = "shmooz";
+
+pub struct OverlayBufferSlot {
+    pub buffer: ShmBuffer,
+    pub busy: bool,
+}
 
 pub struct WindowState {
     #[allow(dead_code)]
@@ -22,14 +28,22 @@ pub struct WindowState {
     pub viewport: wp_viewport::WpViewport,
     #[allow(dead_code)]
     pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-    pub overlay_surface: Option<wl_surface::WlSurface>,
-    pub overlay_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub overlay_buffer: Option<ShmBuffer>,
-    pub overlay_visible: bool,
+    pub spotlight_surface: Option<wl_surface::WlSurface>,
+    pub spotlight_subsurface: Option<wl_subsurface::WlSubsurface>,
+    pub spotlight_buffer: Option<ShmBuffer>,
+    pub spotlight_visible: bool,
+    pub annotation_surface: Option<wl_surface::WlSurface>,
+    pub annotation_subsurface: Option<wl_subsurface::WlSubsurface>,
+    pub annotation_buffers: Vec<OverlayBufferSlot>,
+    pub annotation_frame_callback: Option<wl_callback::WlCallback>,
+    pub annotation_redraw_pending: bool,
+    pub annotation_visible: bool,
     pub zoom_badge_surface: Option<wl_surface::WlSurface>,
     pub zoom_badge_subsurface: Option<wl_subsurface::WlSubsurface>,
     pub zoom_badge_buffer: Option<ShmBuffer>,
     pub zoom_badge_visible: bool,
+    pub annotations: Vec<AnnotationItem>,
+    pub active_annotation: Option<ActiveAnnotation>,
     pub view_source: ViewRect,
     pub initial_view_source: ViewRect,
     pub pointer_x: f64,
@@ -122,14 +136,22 @@ pub fn create_window_for_output(
             surface,
             viewport,
             layer_surface,
-            overlay_surface: None,
-            overlay_subsurface: None,
-            overlay_buffer: None,
-            overlay_visible: false,
+            spotlight_surface: None,
+            spotlight_subsurface: None,
+            spotlight_buffer: None,
+            spotlight_visible: false,
+            annotation_surface: None,
+            annotation_subsurface: None,
+            annotation_buffers: Vec::new(),
+            annotation_frame_callback: None,
+            annotation_redraw_pending: false,
+            annotation_visible: false,
             zoom_badge_surface: None,
             zoom_badge_subsurface: None,
             zoom_badge_buffer: None,
             zoom_badge_visible: false,
+            annotations: Vec::new(),
+            active_annotation: None,
             view_source: initial_view_source,
             initial_view_source,
             pointer_x: logical_size.width / 2.0,

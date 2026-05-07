@@ -1,8 +1,12 @@
 use bytemuck::cast_slice_mut;
 
-const ZOOM_BADGE_ICON_SIZE: usize = 34;
-const ZOOM_BADGE_ICON_STROKE: usize = 4;
-const ZOOM_BADGE_FONT_SCALE: usize = 4;
+use crate::state::{
+    ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
+    StrokeAnnotation,
+};
+
+const BADGE_TITLE_SCALE: usize = 3;
+const BADGE_HINT_SCALE: usize = 2;
 
 #[allow(clippy::too_many_arguments)]
 pub fn fill_rect(
@@ -81,10 +85,43 @@ pub fn draw_spotlight_overlay(
     }
 }
 
-pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize) {
+pub fn draw_annotation_overlay(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    annotations: &[AnnotationItem],
+    active_annotation: Option<&ActiveAnnotation>,
+    cursor: Option<AnnotationPoint>,
+) {
+    let pixels = pixels_u32(pixels);
+    pixels.fill(0);
+
+    for annotation in annotations {
+        draw_annotation_item(pixels, width, height, annotation);
+    }
+
+    if let Some(active_annotation) = active_annotation {
+        match active_annotation {
+            ActiveAnnotation::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
+            ActiveAnnotation::Shape(shape) => draw_shape(pixels, width, height, shape),
+        }
+    }
+
+    if let Some(cursor) = cursor {
+        draw_cursor_marker(pixels, width, height, cursor);
+    }
+}
+
+pub fn paint_zoom_badge(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    title: &str,
+    hints: [&str; 3],
+) {
     pixels_u32(pixels).fill(0);
 
-    fill_rect(pixels, width, height, 0, 0, width, height, 0xD91A_1A1A);
+    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
     fill_rect(pixels, width, height, 0, 0, width, 3, 0xFFFF_C83D);
     fill_rect(
         pixels,
@@ -97,60 +134,358 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize) {
         0xFFFF_C83D,
     );
 
-    draw_zoom_badge_icon(pixels, width, height, 16, 19);
-    draw_zoom_badge_label(pixels, width, height, 68, 22, "ZOOM MODE");
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        16,
+        title,
+        BADGE_TITLE_SCALE,
+        0xFFFF_FFFF,
+    );
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        58,
+        hints[0],
+        BADGE_HINT_SCALE,
+        0xFFFF_C83D,
+    );
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        82,
+        hints[1],
+        BADGE_HINT_SCALE,
+        0xFFF4_F4F4,
+    );
+    draw_label(
+        pixels,
+        width,
+        height,
+        18,
+        106,
+        hints[2],
+        BADGE_HINT_SCALE,
+        0xFFF4_F4F4,
+    );
 }
 
-fn draw_zoom_badge_icon(pixels: &mut [u8], width: usize, height: usize, x: usize, y: usize) {
-    let pixels = pixels_u32(pixels);
-    let radius = ZOOM_BADGE_ICON_SIZE / 2 - 3;
-    let center_x = x + radius + 2;
-    let center_y = y + radius + 2;
-    let inner_radius = radius.saturating_sub(ZOOM_BADGE_ICON_STROKE);
-    let outer_sq = (radius * radius) as i64;
-    let inner_sq = (inner_radius * inner_radius) as i64;
-    let ring = 0xFFFF_C83D;
-    let handle = 0xFFFF_FFFF;
-
-    for yy in y..(y + ZOOM_BADGE_ICON_SIZE).min(height) {
-        for xx in x..(x + ZOOM_BADGE_ICON_SIZE).min(width) {
-            let dx = xx as i64 - center_x as i64;
-            let dy = yy as i64 - center_y as i64;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq <= outer_sq && dist_sq >= inner_sq {
-                pixels[yy * width + xx] = ring;
-            }
-        }
+fn draw_annotation_item(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    annotation: &AnnotationItem,
+) {
+    match annotation {
+        AnnotationItem::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
+        AnnotationItem::Shape(shape) => draw_shape(pixels, width, height, shape),
     }
+}
 
-    for offset in 0..12 {
-        fill_rect_pixels(
+fn draw_stroke(pixels: &mut [u32], width: usize, height: usize, stroke: &StrokeAnnotation) {
+    if stroke.points.len() == 1 {
+        let point = stroke.points[0];
+        draw_disc(
             pixels,
             width,
             height,
-            x + 22 + offset,
-            y + 24 + offset,
-            5,
-            10,
-            handle,
+            point.x,
+            point.y,
+            (stroke.width.max(1) as i32) / 2,
+            stroke.color,
+        );
+        return;
+    }
+
+    for segment in stroke.points.windows(2) {
+        let start = segment[0];
+        let end = segment[1];
+        draw_line(
+            pixels,
+            width,
+            height,
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            stroke.color,
+            stroke.width.max(1) as i32,
         );
     }
 }
 
-fn draw_zoom_badge_label(
+fn draw_shape(pixels: &mut [u32], width: usize, height: usize, shape: &ShapeAnnotation) {
+    match shape.kind {
+        AnnotationShapeKind::Line => draw_line(
+            pixels,
+            width,
+            height,
+            shape.start.x,
+            shape.start.y,
+            shape.end.x,
+            shape.end.y,
+            shape.color,
+            shape.width.max(1) as i32,
+        ),
+        AnnotationShapeKind::Rectangle => draw_rectangle(
+            pixels,
+            width,
+            height,
+            shape.start.x,
+            shape.start.y,
+            shape.end.x,
+            shape.end.y,
+            shape.color,
+            shape.width.max(1) as i32,
+        ),
+        AnnotationShapeKind::Ellipse => draw_ellipse(
+            pixels,
+            width,
+            height,
+            shape.start.x,
+            shape.start.y,
+            shape.end.x,
+            shape.end.y,
+            shape.color,
+            shape.width.max(1) as i32,
+        ),
+    }
+}
+
+fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
+    draw_line(
+        pixels,
+        width,
+        height,
+        cursor.x - 12,
+        cursor.y,
+        cursor.x + 12,
+        cursor.y,
+        0xFF00_0000,
+        5,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        cursor.x,
+        cursor.y - 12,
+        cursor.x,
+        cursor.y + 12,
+        0xFF00_0000,
+        5,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        cursor.x - 12,
+        cursor.y,
+        cursor.x + 12,
+        cursor.y,
+        0xFFFF_FFFF,
+        2,
+    );
+    draw_line(
+        pixels,
+        width,
+        height,
+        cursor.x,
+        cursor.y - 12,
+        cursor.x,
+        cursor.y + 12,
+        0xFFFF_FFFF,
+        2,
+    );
+    draw_disc(pixels, width, height, cursor.x, cursor.y, 4, 0xFFFF_C83D);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_line(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+    thickness: i32,
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).max(1);
+    let radius = thickness.max(1) / 2;
+
+    for step in 0..=steps {
+        let t = step as f64 / steps as f64;
+        let x = x0 as f64 + dx as f64 * t;
+        let y = y0 as f64 + dy as f64 * t;
+        draw_disc(
+            pixels,
+            width,
+            height,
+            x.round() as i32,
+            y.round() as i32,
+            radius,
+            color,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_rectangle(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+    thickness: i32,
+) {
+    let left = x0.min(x1);
+    let right = x0.max(x1);
+    let top = y0.min(y1);
+    let bottom = y0.max(y1);
+
+    draw_line(
+        pixels, width, height, left, top, right, top, color, thickness,
+    );
+    draw_line(
+        pixels, width, height, right, top, right, bottom, color, thickness,
+    );
+    draw_line(
+        pixels, width, height, right, bottom, left, bottom, color, thickness,
+    );
+    draw_line(
+        pixels, width, height, left, bottom, left, top, color, thickness,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_ellipse(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+    thickness: i32,
+) {
+    let left = x0.min(x1) as f64;
+    let right = x0.max(x1) as f64;
+    let top = y0.min(y1) as f64;
+    let bottom = y0.max(y1) as f64;
+    let rx = ((right - left) / 2.0).max(1.0);
+    let ry = ((bottom - top) / 2.0).max(1.0);
+    let cx = left + rx;
+    let cy = top + ry;
+    let steps = ((rx + ry) * 3.0).round() as i32;
+
+    for step in 0..=steps.max(24) {
+        let theta = std::f64::consts::TAU * step as f64 / steps.max(24) as f64;
+        let x = cx + rx * theta.cos();
+        let y = cy + ry * theta.sin();
+        draw_disc(
+            pixels,
+            width,
+            height,
+            x.round() as i32,
+            y.round() as i32,
+            thickness.max(1) / 2,
+            color,
+        );
+    }
+}
+
+fn draw_disc(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    color: u32,
+) {
+    let radius = radius.max(1);
+    let radius_sq = radius * radius;
+
+    for y in (center_y - radius)..=(center_y + radius) {
+        for x in (center_x - radius)..=(center_x + radius) {
+            let dx = x - center_x;
+            let dy = y - center_y;
+            if dx * dx + dy * dy <= radius_sq {
+                blend_pixel(pixels, width, height, x, y, color);
+            }
+        }
+    }
+}
+
+fn blend_pixel(pixels: &mut [u32], width: usize, height: usize, x: i32, y: i32, color: u32) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+
+    let index = y as usize * width + x as usize;
+    pixels[index] = alpha_over(pixels[index], color);
+}
+
+fn alpha_over(dst: u32, src: u32) -> u32 {
+    let src_a = (src >> 24) & 0xFF;
+    if src_a == 0 {
+        return dst;
+    }
+    if src_a == 0xFF {
+        return src;
+    }
+
+    let dst_a = (dst >> 24) & 0xFF;
+    let inverse_src_a = 0xFF - src_a;
+
+    let blend_channel = |src_shift: u32| -> u32 {
+        let src_channel = (src >> src_shift) & 0xFF;
+        let dst_channel = (dst >> src_shift) & 0xFF;
+        src_channel + (dst_channel * inverse_src_a + 0x7F) / 0xFF
+    };
+
+    let out_a = src_a + (dst_a * inverse_src_a + 0x7F) / 0xFF;
+    let out_r = blend_channel(16);
+    let out_g = blend_channel(8);
+    let out_b = blend_channel(0);
+
+    (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
+}
+
+fn draw_label(
     pixels: &mut [u8],
     width: usize,
     height: usize,
     mut x: usize,
     y: usize,
     label: &str,
+    scale: usize,
+    color: u32,
 ) {
     let pixels = pixels_u32(pixels);
-    let color = 0xFFFF_FFFF;
 
     for ch in label.chars() {
-        let Some(glyph) = lookup_zoom_badge_glyph(ch) else {
-            x += 6 * ZOOM_BADGE_FONT_SCALE;
+        if ch == ' ' {
+            x += 6 * scale;
+            continue;
+        }
+
+        let Some(glyph) = lookup_glyph(ch) else {
+            x += 6 * scale;
             continue;
         };
 
@@ -163,26 +498,46 @@ fn draw_zoom_badge_label(
                     pixels,
                     width,
                     height,
-                    x + col * ZOOM_BADGE_FONT_SCALE,
-                    y + row * ZOOM_BADGE_FONT_SCALE,
-                    ZOOM_BADGE_FONT_SCALE,
-                    ZOOM_BADGE_FONT_SCALE,
+                    x + col * scale,
+                    y + row * scale,
+                    scale,
+                    scale,
                     color,
                 );
             }
         }
 
-        x += 6 * ZOOM_BADGE_FONT_SCALE;
+        x += 6 * scale;
     }
 }
 
-fn lookup_zoom_badge_glyph(ch: char) -> Option<&'static [u8; 7]> {
+fn lookup_glyph(ch: char) -> Option<&'static [u8; 7]> {
     match ch {
+        'A' => Some(&[0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
+        'B' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E]),
+        'C' => Some(&[0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E]),
         'D' => Some(&[0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E]),
         'E' => Some(&[0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F]),
+        'F' => Some(&[0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10]),
+        'G' => Some(&[0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F]),
+        'H' => Some(&[0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
+        'I' => Some(&[0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F]),
+        'K' => Some(&[0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11]),
+        'L' => Some(&[0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F]),
         'M' => Some(&[0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11]),
+        'N' => Some(&[0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11]),
         'O' => Some(&[0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E]),
+        'P' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10]),
+        'R' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11]),
+        'S' => Some(&[0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E]),
+        'T' => Some(&[0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04]),
+        'U' => Some(&[0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E]),
+        'V' => Some(&[0x11, 0x11, 0x11, 0x11, 0x0A, 0x0A, 0x04]),
+        'W' => Some(&[0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A]),
+        'Y' => Some(&[0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04]),
         'Z' => Some(&[0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F]),
+        '+' => Some(&[0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00]),
+        '-' => Some(&[0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00]),
         _ => None,
     }
 }
@@ -193,7 +548,12 @@ fn pixels_u32(pixels: &mut [u8]) -> &mut [u32] {
 
 #[cfg(test)]
 mod tests {
-    use super::{draw_spotlight_overlay, fill_rect};
+    use crate::state::{
+        ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, ShapeAnnotation,
+        StrokeAnnotation,
+    };
+
+    use super::{draw_annotation_overlay, draw_spotlight_overlay, fill_rect, paint_zoom_badge};
 
     #[test]
     fn fill_rect_clips_to_buffer_bounds() {
@@ -218,5 +578,73 @@ mod tests {
 
         assert_eq!(center, &0x0000_0000_u32.to_ne_bytes());
         assert_eq!(edge, &0xAA00_0000_u32.to_ne_bytes());
+    }
+
+    #[test]
+    fn annotation_overlay_draws_committed_strokes() {
+        let mut pixels = vec![0_u8; 32 * 32 * 4];
+        let annotations = vec![AnnotationItem::Stroke(StrokeAnnotation {
+            points: vec![
+                AnnotationPoint { x: 4, y: 4 },
+                AnnotationPoint { x: 20, y: 20 },
+            ],
+            color: 0xFFFF_0000,
+            width: 4,
+        })];
+
+        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None);
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn annotation_overlay_draws_active_shape_preview() {
+        let mut pixels = vec![0_u8; 48 * 48 * 4];
+        let active = ActiveAnnotation::Shape(ShapeAnnotation {
+            kind: AnnotationShapeKind::Rectangle,
+            start: AnnotationPoint { x: 8, y: 8 },
+            end: AnnotationPoint { x: 32, y: 24 },
+            color: 0xFF00_FF00,
+            width: 4,
+        });
+
+        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None);
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn annotation_overlay_draws_cursor_marker() {
+        let mut pixels = vec![0_u8; 48 * 48 * 4];
+
+        draw_annotation_overlay(
+            &mut pixels,
+            48,
+            48,
+            &[],
+            None,
+            Some(AnnotationPoint { x: 20, y: 18 }),
+        );
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn zoom_badge_renders_title_and_hints() {
+        let mut pixels = vec![0_u8; 480 * 136 * 4];
+
+        paint_zoom_badge(
+            &mut pixels,
+            480,
+            136,
+            "DRAW PEN",
+            [
+                "P PEN  H HILITE  L LINE",
+                "R RECT  E ELLIPSE  U UNDO",
+                "C CLEAR  ESC BACK",
+            ],
+        );
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
 }

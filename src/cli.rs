@@ -2,16 +2,32 @@ use clap::Parser;
 
 const HELP_EPILOG: &str = "\
 Controls:
-  Mouse scroll            Zoom in/out at mouse position
-  Left click + drag       Pan the view
-  Right click             Exit
-  Double click            Restore/unzoom
-  +/-                     Zoom in/out at center
-  Arrow keys              Pan the view
-  0                       Restore/unzoom
-  s                       Toggle spotlight dim overlay
-  [ / ]                   Decrease/increase spotlight radius
-  Esc                     Exit (default)";
+  Navigation:
+    Mouse scroll          Zoom in/out at mouse position
+    Left click + drag     Pan the view
+    Double click          Restore/unzoom
+    +/-                   Zoom in/out at center
+    Arrow keys            Pan the view
+    0                     Restore/unzoom
+    d                     Toggle draw mode on current zoom
+    w                     Toggle draw-without-zoom mode
+    s                     Toggle spotlight dim overlay
+    [ / ]                 Decrease/increase spotlight radius
+
+  Annotation:
+    Left click + drag     Draw with selected tool
+    p                     Pen
+    h                     Highlighter
+    l                     Line
+    r                     Rectangle
+    e                     Ellipse
+    u                     Undo last annotation
+    c                     Clear annotations
+    Esc                   Return to navigation
+
+  Global:
+    Right click           Exit
+    Esc                   Exit by default";
 
 #[derive(Debug, Clone, Parser)]
 #[command(

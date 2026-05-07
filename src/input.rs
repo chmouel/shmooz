@@ -7,7 +7,7 @@ use wayland_client::{
 
 use crate::{
     overlay,
-    state::AppState,
+    state::{ActiveAnnotation, AnnotationPoint, AnnotationTool, AppState, InteractionMode},
     window,
     zoom::{Point, Size, apply_zoom, restore_view, screen_center},
 };
@@ -19,9 +19,18 @@ const KEY_ESC: u32 = 1;
 const KEY_0: u32 = 11;
 const KEY_MINUS: u32 = 12;
 const KEY_EQUAL: u32 = 13;
+const KEY_W: u32 = 17;
+const KEY_E: u32 = 18;
+const KEY_R: u32 = 19;
+const KEY_U: u32 = 22;
+const KEY_P: u32 = 25;
 const KEY_LEFTBRACE: u32 = 26;
 const KEY_RIGHTBRACE: u32 = 27;
 const KEY_S: u32 = 31;
+const KEY_D: u32 = 32;
+const KEY_H: u32 = 35;
+const KEY_L: u32 = 38;
+const KEY_C: u32 = 46;
 const KEY_KPMINUS: u32 = 74;
 const KEY_KPPLUS: u32 = 78;
 const KEY_KP0: u32 = 82;
@@ -171,6 +180,19 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
     let delta_x = x - prev_x;
     let delta_y = y - prev_y;
 
+    if state.interaction_mode.is_annotating() {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            window.pointer_x = x;
+            window.pointer_y = y;
+        }
+        if pointer_pressed {
+            update_active_annotation(state, output_id, x, y);
+        } else {
+            overlay::refresh_annotation_overlay(state, output_id);
+        }
+        return;
+    }
+
     if pointer_pressed {
         let scale = view_scale(state, output_id);
         if let Some(window) = state.windows.get_mut(&output_id) {
@@ -203,6 +225,22 @@ fn pointer_button(
     let Some(output_id) = active_window_id(state) else {
         return;
     };
+
+    if state.interaction_mode.is_annotating() {
+        match button {
+            BTN_LEFT if button_state == wl_pointer::ButtonState::Pressed => {
+                start_annotation(state, output_id);
+            }
+            BTN_LEFT if button_state == wl_pointer::ButtonState::Released => {
+                finish_annotation(state, output_id);
+            }
+            BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
+                state.request_exit();
+            }
+            _ => {}
+        }
+        return;
+    }
 
     match button {
         BTN_LEFT => {
@@ -242,6 +280,10 @@ fn pointer_button(
 }
 
 fn pointer_axis(state: &mut AppState, value: f64) {
+    if state.interaction_mode.is_annotating() {
+        return;
+    }
+
     let Some(output_id) = active_window_id(state) else {
         return;
     };
@@ -256,14 +298,21 @@ fn pointer_axis(state: &mut AppState, value: f64) {
 }
 
 fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyState) {
-    if state.focused_window.is_none() {
-        return;
-    }
-
     if key_state == wl_keyboard::KeyState::Released {
         if state.repeat_key == Some(key) {
             state.stop_repeat();
         }
+        return;
+    }
+
+    if key == KEY_ESC
+        && state.interaction_mode.is_annotating()
+        && !state
+            .config
+            .close_key
+            .is_some_and(|close_key| close_key.key_code() == KEY_ESC)
+    {
+        set_interaction_mode(state, InteractionMode::Navigate);
         return;
     }
 
@@ -277,17 +326,24 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
     }
 
     match key {
-        KEY_ESC if state.config.close_key.is_none() => {
-            state.request_exit();
-        }
-        KEY_0 | KEY_KP0 => restore_focused_window(state),
+        KEY_ESC if state.config.close_key.is_none() => state.request_exit(),
+        KEY_D => toggle_annotation_mode(state, InteractionMode::AnnotateZoomed),
+        KEY_W => toggle_annotation_mode(state, InteractionMode::AnnotateUnzoomed),
+        KEY_P => select_annotation_tool(state, AnnotationTool::Pen),
+        KEY_H => select_annotation_tool(state, AnnotationTool::Highlighter),
+        KEY_L => select_annotation_tool(state, AnnotationTool::Line),
+        KEY_R => select_annotation_tool(state, AnnotationTool::Rectangle),
+        KEY_E => select_annotation_tool(state, AnnotationTool::Ellipse),
+        KEY_U => undo_annotation(state),
+        KEY_C => clear_annotations(state),
+        KEY_0 | KEY_KP0 if !state.interaction_mode.is_annotating() => restore_focused_window(state),
         KEY_S => {
             state.spotlight_enabled = !state.spotlight_enabled;
             overlay::update_spotlight_overlays(state);
         }
         _ => {
             handle_key_action(state, key);
-            if is_repeatable_key(key) {
+            if !state.interaction_mode.is_annotating() && is_repeatable_key(key) {
                 state.repeat_key = Some(key);
                 state.repeat_deadline = Some(Instant::now() + KEY_REPEAT_DELAY);
             }
@@ -299,6 +355,15 @@ fn handle_key_action(state: &mut AppState, key: u32) {
     let Some(output_id) = state.focused_window else {
         return;
     };
+
+    if state.interaction_mode.is_annotating() {
+        match key {
+            KEY_LEFTBRACE => adjust_spotlight_radius(state, -0.05),
+            KEY_RIGHTBRACE => adjust_spotlight_radius(state, 0.05),
+            _ => {}
+        }
+        return;
+    }
 
     match key {
         KEY_EQUAL | KEY_KPPLUS => {
@@ -314,6 +379,122 @@ fn handle_key_action(state: &mut AppState, key: u32) {
         KEY_LEFTBRACE => adjust_spotlight_radius(state, -0.05),
         KEY_RIGHTBRACE => adjust_spotlight_radius(state, 0.05),
         _ => {}
+    }
+}
+
+fn toggle_annotation_mode(state: &mut AppState, mode: InteractionMode) {
+    let next_mode = if state.interaction_mode == mode {
+        InteractionMode::Navigate
+    } else {
+        mode
+    };
+    set_interaction_mode(state, next_mode);
+}
+
+fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
+    if mode == InteractionMode::AnnotateUnzoomed {
+        if let Some(output_id) = active_window_id(state) {
+            if let Some(window) = state.windows.get_mut(&output_id) {
+                restore_view(&mut window.view_source, window.initial_view_source);
+            }
+            window::render_window(state, output_id);
+        }
+    }
+
+    cancel_active_annotations(state);
+    state.interaction_mode = mode;
+    state.stop_repeat();
+    overlay::update_spotlight_overlays(state);
+    overlay::refresh_zoom_badge_overlays(state);
+    overlay::update_annotation_overlays(state);
+}
+
+fn select_annotation_tool(state: &mut AppState, tool: AnnotationTool) {
+    state.annotation_tool = tool;
+    overlay::refresh_zoom_badge_overlays(state);
+    overlay::update_annotation_overlays(state);
+}
+
+fn start_annotation(state: &mut AppState, output_id: u32) {
+    let point = state
+        .windows
+        .get(&output_id)
+        .map(|window| AnnotationPoint::new(window.pointer_x, window.pointer_y));
+
+    let Some(point) = point else {
+        return;
+    };
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.pointer_pressed = true;
+        window.active_annotation = Some(ActiveAnnotation::new(state.annotation_tool, point));
+    }
+    overlay::update_annotation_overlays(state);
+}
+
+fn update_active_annotation(state: &mut AppState, output_id: u32, x: f64, y: f64) {
+    let point = AnnotationPoint::new(x, y);
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        if let Some(active_annotation) = window.active_annotation.as_mut() {
+            active_annotation.update(point);
+        }
+    }
+    overlay::refresh_annotation_overlay(state, output_id);
+}
+
+fn finish_annotation(state: &mut AppState, output_id: u32) {
+    let completed = state.windows.get_mut(&output_id).and_then(|window| {
+        window.pointer_pressed = false;
+        window
+            .active_annotation
+            .take()
+            .and_then(ActiveAnnotation::finish)
+    });
+
+    if let Some(annotation) = completed {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            window.annotations.push(annotation);
+        }
+    }
+
+    overlay::update_annotation_overlays(state);
+}
+
+fn undo_annotation(state: &mut AppState) {
+    let Some(output_id) = active_window_id(state) else {
+        return;
+    };
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        if window.active_annotation.take().is_none() {
+            window.annotations.pop();
+        }
+        window.pointer_pressed = false;
+    }
+    overlay::update_annotation_overlays(state);
+}
+
+fn clear_annotations(state: &mut AppState) {
+    let Some(output_id) = active_window_id(state) else {
+        return;
+    };
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.annotations.clear();
+        window.active_annotation = None;
+        window.pointer_pressed = false;
+    }
+    overlay::update_annotation_overlays(state);
+}
+
+fn cancel_active_annotations(state: &mut AppState) {
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+    for output_id in output_ids {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            window.active_annotation = None;
+            window.pointer_pressed = false;
+        }
+        overlay::update_window_overlays(state, output_id);
     }
 }
 

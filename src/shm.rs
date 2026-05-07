@@ -35,6 +35,22 @@ impl ShmBuffer {
     where
         D: Dispatch<wl_shm_pool::WlShmPool, ()> + Dispatch<wl_buffer::WlBuffer, ()> + 'static,
     {
+        Self::create_with_data(shm, qh, format, width, height, stride, ())
+    }
+
+    pub fn create_with_data<D, U>(
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<D>,
+        format: wl_shm::Format,
+        width: i32,
+        height: i32,
+        stride: i32,
+        user_data: U,
+    ) -> Result<Self>
+    where
+        D: Dispatch<wl_shm_pool::WlShmPool, ()> + Dispatch<wl_buffer::WlBuffer, U> + 'static,
+        U: Send + Sync + 'static,
+    {
         let size = (stride as usize)
             .checked_mul(height as usize)
             .ok_or_else(|| AppError::buffer_allocation("buffer size overflow"))?;
@@ -53,7 +69,7 @@ impl ShmBuffer {
         };
 
         let pool = shm.create_pool(file.as_fd(), size as i32, qh, ());
-        let wl_buffer = pool.create_buffer(0, width, height, stride, format, qh, ());
+        let wl_buffer = pool.create_buffer(0, width, height, stride, format, qh, user_data);
         pool.destroy();
 
         Ok(Self {

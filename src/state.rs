@@ -21,6 +21,183 @@ use crate::{
     window::WindowState,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InteractionMode {
+    #[default]
+    Navigate,
+    AnnotateZoomed,
+    AnnotateUnzoomed,
+}
+
+impl InteractionMode {
+    pub fn is_annotating(self) -> bool {
+        !matches!(self, Self::Navigate)
+    }
+
+    pub fn badge_title(self, tool: AnnotationTool) -> String {
+        match self {
+            Self::Navigate => "NAVIGATE".to_owned(),
+            Self::AnnotateZoomed => format!("DRAW {}", tool.label()),
+            Self::AnnotateUnzoomed => format!("DRAW NO ZOOM {}", tool.label()),
+        }
+    }
+
+    pub fn badge_hints(self) -> [&'static str; 3] {
+        match self {
+            Self::Navigate => [
+                "D DRAW  W DRAW NO ZOOM",
+                "+ - ZOOM  ARROWS PAN",
+                "S SPOT  ESC CLOSE",
+            ],
+            Self::AnnotateZoomed | Self::AnnotateUnzoomed => [
+                "P PEN  H HILITE  L LINE",
+                "R RECT  E ELLIPSE  U UNDO",
+                "C CLEAR  ESC BACK",
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnnotationTool {
+    #[default]
+    Pen,
+    Highlighter,
+    Line,
+    Rectangle,
+    Ellipse,
+}
+
+impl AnnotationTool {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pen => "PEN",
+            Self::Highlighter => "HILITE",
+            Self::Line => "LINE",
+            Self::Rectangle => "RECT",
+            Self::Ellipse => "ELLIPSE",
+        }
+    }
+
+    pub fn color(self) -> u32 {
+        match self {
+            Self::Pen | Self::Line => 0xFFFF_4F5E,
+            Self::Highlighter => 0x8888_7829,
+            Self::Rectangle => 0xFF48_C78E,
+            Self::Ellipse => 0xFF5B_8DEF,
+        }
+    }
+
+    pub fn stroke_width(self) -> usize {
+        match self {
+            Self::Pen | Self::Line => 4,
+            Self::Highlighter => 18,
+            Self::Rectangle | Self::Ellipse => 5,
+        }
+    }
+
+    pub fn shape_kind(self) -> Option<AnnotationShapeKind> {
+        match self {
+            Self::Line => Some(AnnotationShapeKind::Line),
+            Self::Rectangle => Some(AnnotationShapeKind::Rectangle),
+            Self::Ellipse => Some(AnnotationShapeKind::Ellipse),
+            Self::Pen | Self::Highlighter => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AnnotationPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl AnnotationPoint {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationShapeKind {
+    Line,
+    Rectangle,
+    Ellipse,
+}
+
+#[derive(Debug, Clone)]
+pub struct StrokeAnnotation {
+    pub points: Vec<AnnotationPoint>,
+    pub color: u32,
+    pub width: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShapeAnnotation {
+    pub kind: AnnotationShapeKind,
+    pub start: AnnotationPoint,
+    pub end: AnnotationPoint,
+    pub color: u32,
+    pub width: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum AnnotationItem {
+    Stroke(StrokeAnnotation),
+    Shape(ShapeAnnotation),
+}
+
+#[derive(Debug, Clone)]
+pub enum ActiveAnnotation {
+    Stroke(StrokeAnnotation),
+    Shape(ShapeAnnotation),
+}
+
+impl ActiveAnnotation {
+    pub fn new(tool: AnnotationTool, point: AnnotationPoint) -> Self {
+        match tool.shape_kind() {
+            Some(kind) => Self::Shape(ShapeAnnotation {
+                kind,
+                start: point,
+                end: point,
+                color: tool.color(),
+                width: tool.stroke_width(),
+            }),
+            None => Self::Stroke(StrokeAnnotation {
+                points: vec![point],
+                color: tool.color(),
+                width: tool.stroke_width(),
+            }),
+        }
+    }
+
+    pub fn update(&mut self, point: AnnotationPoint) {
+        match self {
+            Self::Stroke(stroke) => {
+                if stroke.points.last().copied() != Some(point) {
+                    stroke.points.push(point);
+                }
+            }
+            Self::Shape(shape) => {
+                shape.end = point;
+            }
+        }
+    }
+
+    pub fn finish(self) -> Option<AnnotationItem> {
+        match self {
+            Self::Stroke(stroke) if stroke.points.len() >= 2 => {
+                Some(AnnotationItem::Stroke(stroke))
+            }
+            Self::Shape(shape) if shape.start != shape.end => Some(AnnotationItem::Shape(shape)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct BoundGlobals {
     pub compositor: Option<wl_compositor::WlCompositor>,
@@ -92,6 +269,8 @@ pub struct AppState {
     pub fatal_error: Option<AppError>,
     pub spotlight_enabled: bool,
     pub spotlight_radius_frac: f64,
+    pub interaction_mode: InteractionMode,
+    pub annotation_tool: AnnotationTool,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
     pub repeat_interval: Duration,
@@ -111,6 +290,8 @@ impl AppState {
             fatal_error: None,
             spotlight_enabled,
             spotlight_radius_frac: 0.25,
+            interaction_mode: InteractionMode::default(),
+            annotation_tool: AnnotationTool::default(),
             repeat_key: None,
             repeat_deadline: None,
             repeat_interval: Duration::from_millis(50),
