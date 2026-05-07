@@ -2,7 +2,10 @@ use std::cmp;
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
-    protocol::{wl_compositor, wl_output, wl_registry, wl_seat, wl_shm, wl_subcompositor},
+    protocol::{
+        wl_compositor, wl_data_device_manager, wl_output, wl_registry, wl_seat, wl_shm,
+        wl_subcompositor,
+    },
 };
 use wayland_protocols::{
     wp::viewporter::client::wp_viewporter,
@@ -130,6 +133,17 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     );
                     state.globals.compositor = Some(compositor);
                 }
+                "wl_data_device_manager" => {
+                    let manager = registry
+                        .bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
+                            name,
+                            cmp::min(version, 3),
+                            qh,
+                            (),
+                        );
+                    state.globals.data_device_manager = Some(manager.clone());
+                    bind_data_device_if_ready(state, &manager, qh);
+                }
                 "wl_subcompositor" => {
                     let subcompositor =
                         registry.bind::<wl_subcompositor::WlSubcompositor, _, _>(name, 1, qh, ());
@@ -187,6 +201,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                 "wl_seat" => {
                     let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
                     state.globals.seat = Some(seat);
+                    if let Some(manager) = state.globals.data_device_manager.clone() {
+                        bind_data_device_if_ready(state, &manager, qh);
+                    }
                 }
                 _ => {}
             },
@@ -196,6 +213,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
             _ => {}
         }
     }
+}
+
+fn bind_data_device_if_ready(
+    state: &mut AppState,
+    manager: &wl_data_device_manager::WlDataDeviceManager,
+    qh: &QueueHandle<AppState>,
+) {
+    if state.globals.data_device.is_some() {
+        return;
+    }
+    let Some(seat) = state.globals.seat.clone() else {
+        return;
+    };
+    state.globals.data_device = Some(manager.get_data_device(&seat, qh, ()));
 }
 
 impl Dispatch<wl_output::WlOutput, u32> for AppState {

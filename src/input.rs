@@ -9,7 +9,7 @@ use wayland_client::{
 use xkbcommon::xkb;
 
 use crate::{
-    overlay, screenshot,
+    clipboard, overlay, screenshot,
     state::{
         ActiveAnnotation, ActiveMove, AnnotationPoint, AnnotationTool, AppState, InteractionMode,
         KeyboardTextState, TextAnnotation,
@@ -82,6 +82,8 @@ const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const TEXT_ANNOTATION_SCALE: usize = 4;
 const MOVE_HIT_RADIUS: f64 = 12.0;
 const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
+const COPY_SCREENSHOT_TOAST: &str = "Screenshot copied to clipboard";
+const CLIPBOARD_UNAVAILABLE_TOAST: &str = "Clipboard copy unavailable";
 
 pub fn repeat_timer_tick(state: &mut AppState) {
     overlay::expire_toast(state);
@@ -186,9 +188,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
             } => install_keyboard_keymap(state, fd, size as usize),
             wl_keyboard::Event::Key {
                 key,
+                serial,
                 state: WEnum::Value(key_state),
                 ..
-            } => handle_key_event(state, key, key_state),
+            } => handle_key_event(state, key, key_state, serial),
             wl_keyboard::Event::Modifiers {
                 mods_depressed,
                 mods_latched,
@@ -378,7 +381,7 @@ fn pointer_axis(state: &mut AppState, value: f64) {
     zoom_focused_window_at_pointer(state, output_id, scroll);
 }
 
-fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyState) {
+fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyState, serial: u32) {
     if key_state == wl_keyboard::KeyState::Released {
         if state.repeat_key == Some(key) {
             state.stop_repeat();
@@ -405,6 +408,11 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         .is_some_and(|close_key| close_key.key_code() == key)
     {
         state.request_exit();
+        return;
+    }
+
+    if is_copy_screenshot_shortcut(state, key) {
+        copy_screenshot_to_clipboard(state, serial);
         return;
     }
 
@@ -446,6 +454,33 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
                 state.repeat_key = Some(key);
                 state.repeat_deadline = Some(Instant::now() + KEY_REPEAT_DELAY);
             }
+        }
+    }
+}
+
+fn is_copy_screenshot_shortcut(state: &AppState, key: u32) -> bool {
+    key == KEY_C && ctrl_modifier_active(state)
+}
+
+fn ctrl_modifier_active(state: &AppState) -> bool {
+    state.keyboard_text.as_ref().is_some_and(|keyboard_text| {
+        keyboard_text
+            .state
+            .mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE)
+    })
+}
+
+fn copy_screenshot_to_clipboard(state: &mut AppState, serial: u32) {
+    if let Some(output_id) = active_window_id(state) {
+        if !clipboard::is_available(state) {
+            overlay::show_toast(state, output_id, CLIPBOARD_UNAVAILABLE_TOAST);
+            return;
+        }
+        match screenshot::output_png_bytes(state, output_id)
+            .and_then(|png| clipboard::set_png_selection(state, serial, png))
+        {
+            Ok(()) => overlay::show_toast(state, output_id, COPY_SCREENSHOT_TOAST),
+            Err(err) => state.record_fatal(err),
         }
     }
 }
@@ -1040,11 +1075,13 @@ fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) 
 #[cfg(test)]
 mod tests {
     use wayland_client::protocol::wl_keyboard;
+    use xkbcommon::xkb;
 
     use crate::config::{APP_ID, CloseKey, Config};
 
     use super::{
-        AnnotationTool, AppState, InteractionMode, KEY_ESC, KEY_L, KEY_M, KEY_T, handle_key_event,
+        AnnotationTool, AppState, InteractionMode, KEY_C, KEY_ESC, KEY_L, KEY_M, KEY_T,
+        ctrl_modifier_active, handle_key_event, is_copy_screenshot_shortcut,
         select_annotation_tool,
     };
 
@@ -1068,18 +1105,36 @@ mod tests {
         }
     }
 
+    fn ctrl_pressed_state() -> AppState {
+        let mut state = AppState::new(test_config());
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS)
+                .unwrap();
+        let ctrl_mask = 1u32 << keymap.mod_get_index(xkb::MOD_NAME_CTRL);
+        let mut state_machine = xkb::State::new(&keymap);
+        state_machine.update_mask(ctrl_mask, 0, 0, 0, 0, 0);
+        state.keyboard_text = Some(super::KeyboardTextState {
+            _context: context,
+            _keymap: keymap,
+            state: state_machine,
+            compose: None,
+        });
+        state
+    }
+
     #[test]
     fn move_mode_is_toggled_without_losing_selected_tool() {
         let mut state = AppState::new(test_config());
         state.interaction_mode = InteractionMode::AnnotateZoomed;
         state.annotation_tool = AnnotationTool::Rectangle;
 
-        handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed, 0);
         assert_eq!(state.tool_override, Some(AnnotationTool::Move));
         assert_eq!(state.annotation_tool, AnnotationTool::Rectangle);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Move);
 
-        handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_M, wl_keyboard::KeyState::Pressed, 0);
         assert_eq!(state.tool_override, None);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Rectangle);
     }
@@ -1091,7 +1146,7 @@ mod tests {
         state.annotation_tool = AnnotationTool::Line;
         state.tool_override = Some(AnnotationTool::Move);
 
-        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
         assert_eq!(state.tool_override, None);
@@ -1117,12 +1172,12 @@ mod tests {
         state.interaction_mode = InteractionMode::AnnotateZoomed;
         state.annotation_tool = AnnotationTool::Ellipse;
 
-        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed, 0);
         assert_eq!(state.tool_override, Some(AnnotationTool::Text));
         assert_eq!(state.annotation_tool, AnnotationTool::Ellipse);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Text);
 
-        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_T, wl_keyboard::KeyState::Pressed, 0);
         assert_eq!(state.tool_override, None);
         assert_eq!(state.effective_annotation_tool(), AnnotationTool::Ellipse);
     }
@@ -1134,7 +1189,7 @@ mod tests {
         state.annotation_tool = AnnotationTool::Highlighter;
         state.tool_override = Some(AnnotationTool::Text);
 
-        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
         assert_eq!(state.tool_override, None);
@@ -1151,12 +1206,12 @@ mod tests {
         state.annotation_tool = AnnotationTool::Line;
         state.tool_override = Some(AnnotationTool::Move);
 
-        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.interaction_mode, InteractionMode::AnnotateZoomed);
         assert_eq!(state.tool_override, None);
 
-        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_ESC, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.interaction_mode, InteractionMode::Navigate);
         assert_eq!(state.tool_override, None);
@@ -1167,9 +1222,25 @@ mod tests {
         let mut state = AppState::new(test_config());
         state.annotation_tool = AnnotationTool::Pen;
 
-        handle_key_event(&mut state, KEY_L, wl_keyboard::KeyState::Pressed);
+        handle_key_event(&mut state, KEY_L, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.annotation_tool, AnnotationTool::Line);
+    }
+
+    #[test]
+    fn ctrl_modifier_is_detected_from_xkb_state() {
+        let state = ctrl_pressed_state();
+
+        assert!(ctrl_modifier_active(&state));
+        assert!(is_copy_screenshot_shortcut(&state, KEY_C));
+    }
+
+    #[test]
+    fn plain_c_does_not_become_copy_shortcut_without_ctrl() {
+        let state = AppState::new(test_config());
+
+        assert!(!ctrl_modifier_active(&state));
+        assert!(!is_copy_screenshot_shortcut(&state, KEY_C));
     }
 }
 

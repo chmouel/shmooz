@@ -63,6 +63,7 @@ shmooz [options...]
 * `d` - Toggle draw mode on the current zoom level
 * `w` - Toggle draw mode without zoom
 * `s` - Save a screenshot of the current visible output
+* `Ctrl+C` - Copy a screenshot of the current visible output to the Wayland clipboard
 * `f` - Toggle spotlight
 * `[` / `]` - Decrease / increase spotlight radius
 * `p` - Select pen
@@ -85,6 +86,7 @@ shmooz [options...]
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
 * Screenshots save the currently visible output, including zoom, spotlight, annotations, and the badge when it is visible.
+* `Ctrl+C` copies that same visible output to the regular Wayland clipboard as a PNG without saving a file.
 * Screenshots are written to `~/Desktop/Screenshots` by default, or to the directory set with `--screenshot-dir`.
 * Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
 * The on-screen indicator badge shows the current mode, active tool or modifier, and the most relevant actions for the current context.

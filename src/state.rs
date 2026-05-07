@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 use calloop::LoopSignal;
 use wayland_client::{
     QueueHandle,
-    protocol::{wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_subcompositor},
+    protocol::{
+        wl_compositor, wl_data_device, wl_data_device_manager, wl_data_source, wl_keyboard,
+        wl_pointer, wl_seat, wl_shm, wl_subcompositor,
+    },
 };
 use wayland_protocols::{
     wp::viewporter::client::wp_viewporter, xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
@@ -46,7 +49,7 @@ impl InteractionMode {
                     BadgeLine::new(
                         "OTHER",
                         format!(
-                            "S save  F spot  [ ] radius  {} close",
+                            "S save  Ctrl+C copy  F/[ ]  {} close",
                             close_key.map(CloseKey::label).unwrap_or("Esc")
                         ),
                         0xFFF4_F4F4,
@@ -461,6 +464,8 @@ fn point_near_ellipse(
 #[derive(Default)]
 pub struct BoundGlobals {
     pub compositor: Option<wl_compositor::WlCompositor>,
+    pub data_device: Option<wl_data_device::WlDataDevice>,
+    pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     pub subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     pub shm: Option<wl_shm::WlShm>,
@@ -489,6 +494,12 @@ impl BoundGlobals {
         self.compositor
             .clone()
             .ok_or_else(|| AppError::missing_protocol("wl_compositor"))
+    }
+
+    pub fn data_device_manager(&self) -> Result<wl_data_device_manager::WlDataDeviceManager> {
+        self.data_device_manager
+            .clone()
+            .ok_or_else(|| AppError::missing_protocol("wl_data_device_manager"))
     }
 
     pub fn shm(&self) -> Result<wl_shm::WlShm> {
@@ -527,6 +538,7 @@ pub struct AppState {
     pub focused_window: Option<u32>,
     pub loop_signal: Option<LoopSignal>,
     pub fatal_error: Option<AppError>,
+    pub clipboard_selection: Option<ClipboardSelection>,
     pub toast: Option<ToastState>,
     pub spotlight_enabled: bool,
     pub spotlight_radius_frac: f64,
@@ -544,6 +556,12 @@ pub struct KeyboardTextState {
     pub _keymap: xkb::Keymap,
     pub state: xkb::State,
     pub compose: Option<xkb::compose::State>,
+}
+
+pub struct ClipboardSelection {
+    pub source: wl_data_source::WlDataSource,
+    pub mime_type: &'static str,
+    pub data: Vec<u8>,
 }
 
 pub struct ToastState {
@@ -564,6 +582,7 @@ impl AppState {
             focused_window: None,
             loop_signal: None,
             fatal_error: None,
+            clipboard_selection: None,
             toast: None,
             spotlight_enabled,
             spotlight_radius_frac: 0.25,
@@ -718,13 +737,13 @@ mod tests {
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
-        assert_eq!(badge.lines[2].text, "S save  F spot  [ ] radius  Esc close");
+        assert_eq!(badge.lines[2].text, "S save  Ctrl+C copy  F/[ ]  Esc close");
     }
 
     #[test]
     fn navigate_badge_reflects_remapped_close_key() {
         let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, Some(CloseKey::Q));
 
-        assert_eq!(badge.lines[2].text, "S save  F spot  [ ] radius  Q close");
+        assert_eq!(badge.lines[2].text, "S save  Ctrl+C copy  F/[ ]  Q close");
     }
 }

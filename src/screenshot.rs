@@ -7,6 +7,7 @@ use std::{
 
 use bytemuck::cast_slice;
 use png::{BitDepth, ColorType, Encoder};
+use wayland_client::protocol::wl_shm;
 
 use crate::{
     error::{AppError, Result},
@@ -21,6 +22,7 @@ struct SourceFrame<'a> {
     width: usize,
     height: usize,
     stride: usize,
+    format: SourcePixelFormat,
 }
 
 struct OverlayImage<'a> {
@@ -29,7 +31,58 @@ struct OverlayImage<'a> {
     height: usize,
 }
 
+struct RenderedScreenshot {
+    pixels: Vec<u32>,
+    width: usize,
+    height: usize,
+}
+
+#[derive(Clone, Copy)]
+enum SourcePixelFormat {
+    Argb8888,
+    Xrgb8888,
+    Abgr8888,
+    Xbgr8888,
+    Rgba8888,
+    Rgbx8888,
+    Bgra8888,
+    Bgrx8888,
+}
+
+impl SourcePixelFormat {
+    fn from_wl_shm(format: wl_shm::Format) -> Result<Self> {
+        match format {
+            wl_shm::Format::Argb8888 => Ok(Self::Argb8888),
+            wl_shm::Format::Xrgb8888 => Ok(Self::Xrgb8888),
+            wl_shm::Format::Abgr8888 => Ok(Self::Abgr8888),
+            wl_shm::Format::Xbgr8888 => Ok(Self::Xbgr8888),
+            wl_shm::Format::Rgba8888 => Ok(Self::Rgba8888),
+            wl_shm::Format::Rgbx8888 => Ok(Self::Rgbx8888),
+            wl_shm::Format::Bgra8888 => Ok(Self::Bgra8888),
+            wl_shm::Format::Bgrx8888 => Ok(Self::Bgrx8888),
+            _ => Err(AppError::runtime(format!(
+                "unsupported wl_shm screenshot format: {format:?}"
+            ))),
+        }
+    }
+}
+
+pub fn output_png_bytes(state: &AppState, output_id: u32) -> Result<Vec<u8>> {
+    let rendered = render_output(state, output_id)?;
+    encode_png_bytes(&rendered.pixels, rendered.width, rendered.height)
+}
+
 pub fn save_output(state: &AppState, output_id: u32) -> Result<PathBuf> {
+    let png = output_png_bytes(state, output_id)?;
+    let path = write_png(&state.config.screenshot_dir, &png)?;
+    tracing::info!(path = %path.display(), output_id, "saved screenshot");
+    if let Err(err) = emit_saved_path(&path) {
+        tracing::warn!(path = %path.display(), error = %err, "failed to write screenshot path");
+    }
+    Ok(path)
+}
+
+fn render_output(state: &AppState, output_id: u32) -> Result<RenderedScreenshot> {
     let output = state
         .outputs
         .get(&output_id)
@@ -42,6 +95,7 @@ pub fn save_output(state: &AppState, output_id: u32) -> Result<PathBuf> {
         .buffer
         .as_ref()
         .ok_or_else(|| AppError::runtime(format!("output {output_id} has no captured buffer")))?;
+    let source_format = SourcePixelFormat::from_wl_shm(source.format)?;
 
     let (logical_width, logical_height) = output.logical_size();
     if logical_width <= 0 || logical_height <= 0 {
@@ -63,6 +117,7 @@ pub fn save_output(state: &AppState, output_id: u32) -> Result<PathBuf> {
             width: source.width as usize,
             height: source.height as usize,
             stride: (source.stride / 4) as usize,
+            format: source_format,
         },
         window.view_source,
     );
@@ -116,17 +171,11 @@ pub fn save_output(state: &AppState, output_id: u32) -> Result<PathBuf> {
         );
     }
 
-    let path = write_png(
-        &state.config.screenshot_dir,
-        &frame,
-        logical_width,
-        logical_height,
-    )?;
-    tracing::info!(path = %path.display(), output_id, "saved screenshot");
-    if let Err(err) = emit_saved_path(&path) {
-        tracing::warn!(path = %path.display(), error = %err, "failed to write screenshot path");
-    }
-    Ok(path)
+    Ok(RenderedScreenshot {
+        pixels: frame,
+        width: logical_width,
+        height: logical_height,
+    })
 }
 
 fn emit_saved_path(path: &Path) -> io::Result<()> {
@@ -170,16 +219,59 @@ fn sample_bilinear(source: &SourceFrame<'_>, x: f64, y: f64) -> u32 {
     let ty = clamped_y - y0 as f64;
 
     let top = blend_samples(
-        source.pixels[y0 * source.stride + x0],
-        source.pixels[y0 * source.stride + x1],
+        normalize_source_pixel(source.format, source.pixels[y0 * source.stride + x0]),
+        normalize_source_pixel(source.format, source.pixels[y0 * source.stride + x1]),
         tx,
     );
     let bottom = blend_samples(
-        source.pixels[y1 * source.stride + x0],
-        source.pixels[y1 * source.stride + x1],
+        normalize_source_pixel(source.format, source.pixels[y1 * source.stride + x0]),
+        normalize_source_pixel(source.format, source.pixels[y1 * source.stride + x1]),
         tx,
     );
     blend_samples(top, bottom, ty)
+}
+
+fn normalize_source_pixel(format: SourcePixelFormat, pixel: u32) -> u32 {
+    match format {
+        SourcePixelFormat::Argb8888 => pixel,
+        SourcePixelFormat::Xrgb8888 => pixel | 0xFF00_0000,
+        SourcePixelFormat::Abgr8888 => {
+            (pixel & 0xFF00_0000)
+                | ((pixel & 0x0000_00FF) << 16)
+                | (pixel & 0x0000_FF00)
+                | ((pixel & 0x00FF_0000) >> 16)
+        }
+        SourcePixelFormat::Xbgr8888 => {
+            0xFF00_0000
+                | ((pixel & 0x0000_00FF) << 16)
+                | (pixel & 0x0000_FF00)
+                | ((pixel & 0x00FF_0000) >> 16)
+        }
+        SourcePixelFormat::Rgba8888 => {
+            ((pixel & 0x0000_00FF) << 24)
+                | ((pixel & 0xFF00_0000) >> 8)
+                | ((pixel & 0x00FF_0000) >> 8)
+                | ((pixel & 0x0000_FF00) >> 8)
+        }
+        SourcePixelFormat::Rgbx8888 => {
+            0xFF00_0000
+                | ((pixel & 0xFF00_0000) >> 8)
+                | ((pixel & 0x00FF_0000) >> 8)
+                | ((pixel & 0x0000_FF00) >> 8)
+        }
+        SourcePixelFormat::Bgra8888 => {
+            ((pixel & 0x0000_00FF) << 24)
+                | ((pixel & 0x0000_FF00) << 8)
+                | ((pixel & 0x00FF_0000) >> 8)
+                | ((pixel & 0xFF00_0000) >> 24)
+        }
+        SourcePixelFormat::Bgrx8888 => {
+            0xFF00_0000
+                | ((pixel & 0x0000_FF00) << 8)
+                | ((pixel & 0x00FF_0000) >> 8)
+                | ((pixel & 0xFF00_0000) >> 24)
+        }
+    }
 }
 
 fn blend_samples(left: u32, right: u32, amount: f64) -> u32 {
@@ -231,25 +323,37 @@ fn blend_region(
     }
 }
 
-fn write_png(directory: &Path, pixels: &[u32], width: usize, height: usize) -> Result<PathBuf> {
+fn write_png(directory: &Path, png: &[u8]) -> Result<PathBuf> {
     fs::create_dir_all(directory).map_err(|err| AppError::screenshot(directory, err))?;
 
     let (file, path) = create_output_file(directory)?;
-    let writer = std::io::BufWriter::new(file);
+    let mut writer = std::io::BufWriter::new(file);
+    writer
+        .write_all(png)
+        .map_err(|err| AppError::screenshot(&path, err))?;
+    writer
+        .flush()
+        .map_err(|err| AppError::screenshot(&path, err))?;
+    Ok(path)
+}
+
+fn encode_png_bytes(pixels: &[u32], width: usize, height: usize) -> Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    let writer = std::io::BufWriter::new(&mut encoded);
     let mut encoder = Encoder::new(writer, width as u32, height as u32);
     encoder.set_color(ColorType::Rgba);
     encoder.set_depth(BitDepth::Eight);
     let mut png_writer = encoder
         .write_header()
-        .map_err(|err| AppError::screenshot(&path, err))?;
+        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
     let rgba = rgba_bytes(pixels);
     png_writer
         .write_image_data(&rgba)
-        .map_err(|err| AppError::screenshot(&path, err))?;
+        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
     png_writer
         .finish()
-        .map_err(|err| AppError::screenshot(&path, err))?;
-    Ok(path)
+        .map_err(|err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}")))?;
+    Ok(encoded)
 }
 
 fn create_output_file(directory: &Path) -> Result<(std::fs::File, PathBuf)> {
@@ -293,8 +397,9 @@ fn rgba_bytes(pixels: &[u32]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceFrame, render_view};
+    use super::{SourceFrame, SourcePixelFormat, encode_png_bytes, render_view};
     use crate::{render, zoom::ViewRect};
+    use wayland_client::protocol::wl_shm;
 
     #[test]
     fn blend_pixel_composites_premultiplied_overlay() {
@@ -317,6 +422,7 @@ mod tests {
                 width: 2,
                 height: 2,
                 stride: 2,
+                format: SourcePixelFormat::Argb8888,
             },
             ViewRect {
                 x: 1.0,
@@ -349,6 +455,7 @@ mod tests {
                 width: 2,
                 height: 2,
                 stride: 3,
+                format: SourcePixelFormat::Argb8888,
             },
             ViewRect {
                 x: 1.0,
@@ -359,5 +466,56 @@ mod tests {
         );
 
         assert_eq!(destination[0], 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn render_view_normalizes_supported_8888_formats() {
+        let cases = [
+            (SourcePixelFormat::Argb8888, 0xAA11_2233, 0xAA11_2233),
+            (SourcePixelFormat::Xrgb8888, 0x0011_2233, 0xFF11_2233),
+            (SourcePixelFormat::Abgr8888, 0xAA33_2211, 0xAA11_2233),
+            (SourcePixelFormat::Xbgr8888, 0x0033_2211, 0xFF11_2233),
+            (SourcePixelFormat::Rgba8888, 0x1122_33AA, 0xAA11_2233),
+            (SourcePixelFormat::Rgbx8888, 0x1122_3300, 0xFF11_2233),
+            (SourcePixelFormat::Bgra8888, 0x3322_11AA, 0xAA11_2233),
+            (SourcePixelFormat::Bgrx8888, 0x3322_1100, 0xFF11_2233),
+        ];
+
+        for (format, source_pixel, expected) in cases {
+            let source = [source_pixel];
+            let mut destination = [0u32; 1];
+
+            render_view(
+                &mut destination,
+                (1, 1),
+                SourceFrame {
+                    pixels: &source,
+                    width: 1,
+                    height: 1,
+                    stride: 1,
+                    format,
+                },
+                ViewRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                },
+            );
+
+            assert_eq!(destination[0], expected);
+        }
+    }
+
+    #[test]
+    fn screenshot_format_rejects_non_8888_layouts() {
+        assert!(SourcePixelFormat::from_wl_shm(wl_shm::Format::Rgb888).is_err());
+    }
+
+    #[test]
+    fn encode_png_bytes_writes_png_signature() {
+        let encoded = encode_png_bytes(&[0xFFFF_0000], 1, 1).unwrap();
+
+        assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
     }
 }

@@ -12,6 +12,7 @@ Controls:
     d                     Toggle draw mode on current zoom
     w                     Toggle draw-without-zoom mode
     s                     Save screenshot
+    Ctrl+C                Copy screenshot to clipboard
     f                     Toggle spotlight dim overlay
     [ / ]                 Decrease/increase spotlight radius
 

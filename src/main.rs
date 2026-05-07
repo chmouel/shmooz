@@ -1,6 +1,7 @@
 mod app;
 mod capture;
 mod cli;
+mod clipboard;
 mod config;
 mod error;
 mod input;
