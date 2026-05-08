@@ -10,7 +10,14 @@ use wayland_client::{
     },
 };
 use wayland_protocols::{
-    wp::viewporter::client::wp_viewporter, xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
+    wp::{
+        primary_selection::zv1::client::{
+            zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
+            zwp_primary_selection_source_v1,
+        },
+        viewporter::client::wp_viewporter,
+    },
+    xdg::xdg_output::zv1::client::zxdg_output_manager_v1,
 };
 use wayland_protocols_wlr::{
     layer_shell::v1::client::zwlr_layer_shell_v1,
@@ -466,6 +473,10 @@ pub struct BoundGlobals {
     pub compositor: Option<wl_compositor::WlCompositor>,
     pub data_device: Option<wl_data_device::WlDataDevice>,
     pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    pub primary_selection_device:
+        Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
+    pub primary_selection_device_manager:
+        Option<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1>,
     pub subcompositor: Option<wl_subcompositor::WlSubcompositor>,
     pub layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     pub shm: Option<wl_shm::WlShm>,
@@ -494,12 +505,6 @@ impl BoundGlobals {
         self.compositor
             .clone()
             .ok_or_else(|| AppError::missing_protocol("wl_compositor"))
-    }
-
-    pub fn data_device_manager(&self) -> Result<wl_data_device_manager::WlDataDeviceManager> {
-        self.data_device_manager
-            .clone()
-            .ok_or_else(|| AppError::missing_protocol("wl_data_device_manager"))
     }
 
     pub fn shm(&self) -> Result<wl_shm::WlShm> {
@@ -539,6 +544,7 @@ pub struct AppState {
     pub loop_signal: Option<LoopSignal>,
     pub fatal_error: Option<AppError>,
     pub clipboard_selection: Option<ClipboardSelection>,
+    pub primary_selection: Option<PrimarySelection>,
     pub toast: Option<ToastState>,
     pub spotlight_enabled: bool,
     pub spotlight_radius_frac: f64,
@@ -563,6 +569,11 @@ pub struct ClipboardSelection {
     pub data: Vec<u8>,
 }
 
+pub struct PrimarySelection {
+    pub source: zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+    pub data: Vec<u8>,
+}
+
 pub struct ToastState {
     pub output_id: u32,
     pub message: String,
@@ -582,6 +593,7 @@ impl AppState {
             loop_signal: None,
             fatal_error: None,
             clipboard_selection: None,
+            primary_selection: None,
             toast: None,
             spotlight_enabled,
             spotlight_radius_frac: 0.25,

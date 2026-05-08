@@ -21,7 +21,7 @@ make it a useful presentation tool.
 
 <img width="3831" height="2160" alt="image" src="https://github.com/user-attachments/assets/289c925d-b771-4a31-9f84-4bfe24d947cb" />
 
-* Annotate image 
+* Annotate image
 
 <img width="3322" height="1851" alt="CopyQ qCHygC" src="https://github.com/user-attachments/assets/ee604e72-f1cc-4403-9f1c-350b7d1c8043" />
 
@@ -30,6 +30,7 @@ make it a useful presentation tool.
 ```sh
 shmooz [options...]
 ```
+
 ### Options
 
 * `-h, --help` - Show help message and quit
@@ -86,7 +87,7 @@ shmooz [options...]
 * `w` restores the full view first, then enters draw mode without zoom.
 * Annotations stay attached to the underlying image content when you zoom or restore the view.
 * Screenshots save the currently visible output, including zoom, spotlight, and annotations.
-* `Ctrl+C` copies that same visible output to the regular Wayland clipboard as a PNG without saving a file.
+* `Ctrl+C` copies that same visible output to the regular Wayland clipboard as a PNG without saving a file, and also updates the primary selection when the compositor supports it.
 * Screenshots are written to `~/Desktop/Screenshots` by default, or to the directory set with `--screenshot-dir`.
 * Text annotations now use the Wayland keyboard keymap, so accented characters and layout punctuation should follow your active keyboard layout much more closely.
 * The on-screen indicator badge shows the current mode, active tool or modifier, and the most relevant actions for the current context.

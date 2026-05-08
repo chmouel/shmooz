@@ -8,7 +8,10 @@ use wayland_client::{
     },
 };
 use wayland_protocols::{
-    wp::viewporter::client::wp_viewporter,
+    wp::{
+        primary_selection::zv1::client::zwp_primary_selection_device_manager_v1,
+        viewporter::client::wp_viewporter,
+    },
     xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1},
 };
 use wayland_protocols_wlr::{
@@ -144,6 +147,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.globals.data_device_manager = Some(manager.clone());
                     bind_data_device_if_ready(state, &manager, qh);
                 }
+                "zwp_primary_selection_device_manager_v1" => {
+                    let manager = registry.bind::<
+                        zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+                        _,
+                        _,
+                    >(name, 1, qh, ());
+                    state.globals.primary_selection_device_manager = Some(manager.clone());
+                    bind_primary_selection_device_if_ready(state, &manager, qh);
+                }
                 "wl_subcompositor" => {
                     let subcompositor =
                         registry.bind::<wl_subcompositor::WlSubcompositor, _, _>(name, 1, qh, ());
@@ -204,6 +216,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     if let Some(manager) = state.globals.data_device_manager.clone() {
                         bind_data_device_if_ready(state, &manager, qh);
                     }
+                    if let Some(manager) = state.globals.primary_selection_device_manager.clone() {
+                        bind_primary_selection_device_if_ready(state, &manager, qh);
+                    }
                 }
                 _ => {}
             },
@@ -227,6 +242,20 @@ fn bind_data_device_if_ready(
         return;
     };
     state.globals.data_device = Some(manager.get_data_device(&seat, qh, ()));
+}
+
+fn bind_primary_selection_device_if_ready(
+    state: &mut AppState,
+    manager: &zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+    qh: &QueueHandle<AppState>,
+) {
+    if state.globals.primary_selection_device.is_some() {
+        return;
+    }
+    let Some(seat) = state.globals.seat.clone() else {
+        return;
+    };
+    state.globals.primary_selection_device = Some(manager.get_device(&seat, qh, ()));
 }
 
 impl Dispatch<wl_output::WlOutput, u32> for AppState {
