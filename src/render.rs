@@ -10,6 +10,7 @@ const BADGE_SUBTITLE_SCALE: usize = 2;
 const BADGE_HINT_SCALE: usize = 2;
 const TOAST_TITLE_SCALE: usize = 2;
 const TOAST_TEXT_SCALE: usize = 1;
+pub(crate) const TEXT_GLYPH_HEIGHT: usize = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorStyle {
@@ -574,7 +575,7 @@ fn draw_text_annotation(pixels: &mut [u32], width: usize, height: usize, text: &
             text.position.x.max(0) as usize,
             text.position.y.max(0) as usize,
             2,
-            7 * text.scale.max(1),
+            TEXT_GLYPH_HEIGHT * text.scale.max(1),
             0xFFFF_C83D,
         );
         return;
@@ -829,7 +830,7 @@ fn draw_bitmap_glyph(
     height: usize,
     x: i32,
     y: i32,
-    glyph: &[u8; 7],
+    glyph: &[u8; TEXT_GLYPH_HEIGHT],
     scale: usize,
     color: u32,
 ) -> i32 {
@@ -861,7 +862,7 @@ fn draw_bitmap_glyph(
     x + (6 * scale) as i32
 }
 
-fn lookup_glyph(ch: char) -> Option<&'static [u8; 7]> {
+fn lookup_glyph(ch: char) -> Option<&'static [u8; TEXT_GLYPH_HEIGHT]> {
     match ch {
         'A' => Some(&[0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
         'B' => Some(&[0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E]),

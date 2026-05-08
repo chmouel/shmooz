@@ -29,6 +29,7 @@ use crate::{
     config::{CloseKey, Config},
     error::{AppError, Result},
     output::{OutputState, output_matches_filter},
+    render::TEXT_GLYPH_HEIGHT,
     window::WindowState,
 };
 
@@ -45,7 +46,14 @@ impl InteractionMode {
         !matches!(self, Self::Navigate)
     }
 
-    pub fn badge(self, tool: AnnotationTool, close_key: Option<CloseKey>) -> BadgeModel {
+    pub fn badge(
+        self,
+        tool: AnnotationTool,
+        annotation_color: u32,
+        text_scale: usize,
+        close_key: Option<CloseKey>,
+    ) -> BadgeModel {
+        let text_height = text_scale.max(1) * TEXT_GLYPH_HEIGHT;
         match self {
             Self::Navigate => BadgeModel {
                 title: "NAVIGATE".to_owned(),
@@ -69,17 +77,17 @@ impl InteractionMode {
                     subtitle: "Modifier: MOVE".to_owned(),
                     lines: [
                         BadgeLine::new("DRAG", "Drag existing annotation", 0xFFFF_C83D),
-                        BadgeLine::new("NEXT", "P/H/L/R/E draw  T text", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "U undo  C clear  Esc back", 0xFFF4_F4F4),
+                        BadgeLine::new("NEXT", "P/H/L/R/E draw  T text  Esc", 0xFFF4_F4F4),
+                        BadgeLine::new("STYLE", "1-0-= color  [ ] size  U/C", annotation_color),
                     ],
                 },
                 AnnotationTool::Text => BadgeModel {
                     title: self.annotate_badge_title().to_owned(),
-                    subtitle: "Modifier: TEXT".to_owned(),
+                    subtitle: format!("Modifier: TEXT  Height: {text_height}px"),
                     lines: [
                         BadgeLine::new("PLACE", "Click to place text", 0xFFFF_C83D),
-                        BadgeLine::new("TEXT", "Type  Bksp delete  Enter commit", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "M move  U undo  C clear  Esc back", 0xFFF4_F4F4),
+                        BadgeLine::new("TEXT", "Type  Bksp delete  Enter  Esc", 0xFFF4_F4F4),
+                        BadgeLine::new("STYLE", "1-0-= color  [ ] size  M/U/C", annotation_color),
                     ],
                 },
                 _ => BadgeModel {
@@ -87,8 +95,8 @@ impl InteractionMode {
                     subtitle: format!("Tool: {}", tool.label()),
                     lines: [
                         BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
-                        BadgeLine::new("TOOL", "P/H paint  L/R/E shape", 0xFFF4_F4F4),
-                        BadgeLine::new("EDIT", "M move  T text  U/C edit  Esc back", 0xFFF4_F4F4),
+                        BadgeLine::new("TOOL", "P/H paint  L/R/E shape  Esc", 0xFFF4_F4F4),
+                        BadgeLine::new("STYLE", "1-0-= color  [ ] size  M/T/U/C", annotation_color),
                     ],
                 },
             },
@@ -128,6 +136,31 @@ impl BadgeLine {
     }
 }
 
+pub const DEFAULT_TEXT_ANNOTATION_SCALE: usize = 4;
+pub const MIN_TEXT_ANNOTATION_SCALE: usize = 1;
+pub const MAX_TEXT_ANNOTATION_SCALE: usize = 12;
+const HIGHLIGHTER_ALPHA: u32 = 0x88;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaletteColor {
+    pub value: u32,
+}
+
+pub const ANNOTATION_COLOR_PALETTE: [PaletteColor; 12] = [
+    PaletteColor { value: 0xFFFF_4F5E },
+    PaletteColor { value: 0xFFFF_8A3D },
+    PaletteColor { value: 0xFFFF_C83D },
+    PaletteColor { value: 0xFFE7_E247 },
+    PaletteColor { value: 0xFF48_C78E },
+    PaletteColor { value: 0xFF17_BF9A },
+    PaletteColor { value: 0xFF35_B9FF },
+    PaletteColor { value: 0xFF5B_8DEF },
+    PaletteColor { value: 0xFF6F_6BFF },
+    PaletteColor { value: 0xFFB0_5BFF },
+    PaletteColor { value: 0xFFFF_FFFF },
+    PaletteColor { value: 0xFF20_2020 },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnnotationTool {
     #[default]
@@ -150,17 +183,6 @@ impl AnnotationTool {
             Self::Line => "LINE",
             Self::Rectangle => "RECT",
             Self::Ellipse => "ELLIPSE",
-        }
-    }
-
-    pub fn color(self) -> u32 {
-        match self {
-            Self::Pen | Self::Line => 0xFFFF_4F5E,
-            Self::Highlighter => 0x8888_7829,
-            Self::Move => 0xFFFF_C83D,
-            Self::Text => 0xFFFF_FFFF,
-            Self::Rectangle => 0xFF48_C78E,
-            Self::Ellipse => 0xFF5B_8DEF,
         }
     }
 
@@ -284,18 +306,18 @@ pub enum ActiveAnnotation {
 }
 
 impl ActiveAnnotation {
-    pub fn new(tool: AnnotationTool, point: AnnotationPoint) -> Self {
+    pub fn new(tool: AnnotationTool, point: AnnotationPoint, color: u32) -> Self {
         match tool.shape_kind() {
             Some(kind) => Self::Shape(ShapeAnnotation {
                 kind,
                 start: point,
                 end: point,
-                color: tool.color(),
+                color,
                 width: tool.stroke_width(),
             }),
             None => Self::Stroke(StrokeAnnotation {
                 points: vec![point],
-                color: tool.color(),
+                color,
                 width: tool.stroke_width(),
             }),
         }
@@ -550,6 +572,8 @@ pub struct AppState {
     pub spotlight_radius_frac: f64,
     pub interaction_mode: InteractionMode,
     pub annotation_tool: AnnotationTool,
+    pub annotation_color_index: usize,
+    pub text_annotation_scale: usize,
     pub tool_override: Option<AnnotationTool>,
     pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
@@ -599,6 +623,8 @@ impl AppState {
             spotlight_radius_frac: 0.25,
             interaction_mode: InteractionMode::default(),
             annotation_tool: AnnotationTool::default(),
+            annotation_color_index: 0,
+            text_annotation_scale: DEFAULT_TEXT_ANNOTATION_SCALE,
             tool_override: None,
             keyboard_text: None,
             repeat_key: None,
@@ -664,6 +690,52 @@ impl AppState {
     pub fn effective_annotation_tool(&self) -> AnnotationTool {
         self.tool_override.unwrap_or(self.annotation_tool)
     }
+
+    pub fn selected_palette_color(&self) -> u32 {
+        ANNOTATION_COLOR_PALETTE
+            .get(self.annotation_color_index)
+            .copied()
+            .unwrap_or(ANNOTATION_COLOR_PALETTE[0])
+            .value
+    }
+
+    pub fn annotation_color_for(&self, tool: AnnotationTool) -> u32 {
+        match tool {
+            AnnotationTool::Highlighter => {
+                premultiply_alpha(self.selected_palette_color(), HIGHLIGHTER_ALPHA)
+            }
+            AnnotationTool::Move => 0xFFFF_C83D,
+            _ => self.selected_palette_color(),
+        }
+    }
+
+    pub fn select_annotation_color(&mut self, index: usize) -> bool {
+        if index >= ANNOTATION_COLOR_PALETTE.len() || self.annotation_color_index == index {
+            return false;
+        }
+        self.annotation_color_index = index;
+        true
+    }
+
+    pub fn adjust_text_annotation_scale(&mut self, delta: i32) -> bool {
+        let next = (self.text_annotation_scale as i32 + delta).clamp(
+            MIN_TEXT_ANNOTATION_SCALE as i32,
+            MAX_TEXT_ANNOTATION_SCALE as i32,
+        ) as usize;
+        if next == self.text_annotation_scale {
+            return false;
+        }
+        self.text_annotation_scale = next;
+        true
+    }
+}
+
+fn premultiply_alpha(color: u32, alpha: u32) -> u32 {
+    let premultiply = |channel: u32| (channel * alpha + 0x7F) / 0xFF;
+    let red = premultiply((color >> 16) & 0xFF);
+    let green = premultiply((color >> 8) & 0xFF);
+    let blue = premultiply(color & 0xFF);
+    (alpha << 24) | (red << 16) | (green << 8) | blue
 }
 
 #[cfg(test)]
@@ -671,8 +743,9 @@ mod tests {
     use crate::config::{APP_ID, CloseKey, Config};
 
     use super::{
-        AnnotationItem, AnnotationPoint, AnnotationShapeKind, AnnotationTool, AppState,
-        InteractionMode, ShapeAnnotation, StrokeAnnotation, TextAnnotation,
+        ANNOTATION_COLOR_PALETTE, AnnotationItem, AnnotationPoint, AnnotationShapeKind,
+        AnnotationTool, AppState, InteractionMode, MAX_TEXT_ANNOTATION_SCALE, ShapeAnnotation,
+        StrokeAnnotation, TextAnnotation,
     };
 
     fn test_config() -> Config {
@@ -744,7 +817,12 @@ mod tests {
 
     #[test]
     fn navigate_badge_shows_draw_modes() {
-        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, None);
+        let badge = InteractionMode::Navigate.badge(
+            AnnotationTool::Pen,
+            ANNOTATION_COLOR_PALETTE[0].value,
+            4,
+            None,
+        );
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
@@ -753,8 +831,54 @@ mod tests {
 
     #[test]
     fn navigate_badge_reflects_remapped_close_key() {
-        let badge = InteractionMode::Navigate.badge(AnnotationTool::Pen, Some(CloseKey::Q));
+        let badge = InteractionMode::Navigate.badge(
+            AnnotationTool::Pen,
+            ANNOTATION_COLOR_PALETTE[0].value,
+            4,
+            Some(CloseKey::Q),
+        );
 
         assert_eq!(badge.lines[2].text, "S save  Ctrl+C copy  F/[ ]  Q close");
+    }
+
+    #[test]
+    fn annotate_badge_keeps_escape_visible() {
+        let badge = InteractionMode::AnnotateZoomed.badge(
+            AnnotationTool::Pen,
+            ANNOTATION_COLOR_PALETTE[0].value,
+            4,
+            None,
+        );
+
+        assert!(badge.lines[1].text.contains("Esc"));
+        assert!(badge.lines[2].text.contains("U/C"));
+    }
+
+    #[test]
+    fn highlighter_uses_selected_palette_with_transparency() {
+        let mut state = AppState::new(test_config());
+        state.annotation_color_index = 4;
+
+        assert_eq!(
+            state.annotation_color_for(AnnotationTool::Highlighter),
+            0x8826_6A4C
+        );
+        assert_eq!(
+            state.annotation_color_for(AnnotationTool::Text),
+            0xFF48_C78E
+        );
+    }
+
+    #[test]
+    fn text_scale_adjustment_clamps_to_bounds() {
+        let mut state = AppState::new(test_config());
+
+        assert!(state.adjust_text_annotation_scale(-10));
+        assert!(!state.adjust_text_annotation_scale(-1));
+        for _ in 0..32 {
+            state.adjust_text_annotation_scale(1);
+        }
+
+        assert_eq!(state.text_annotation_scale, MAX_TEXT_ANNOTATION_SCALE);
     }
 }

@@ -79,7 +79,6 @@ const DOUBLE_CLICK_TIME_MS: u32 = 400;
 const KEYBOARD_PAN_STEP: f64 = 50.0;
 const KEYBOARD_ZOOM_STEP: f64 = 10.0;
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
-const TEXT_ANNOTATION_SCALE: usize = 4;
 const MOVE_HIT_RADIUS: f64 = 12.0;
 const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
 const COPY_SCREENSHOT_TOAST: &str = "Screenshot copied to clipboard";
@@ -305,7 +304,7 @@ fn pointer_button(
                 } else if active_tool == AnnotationTool::Move {
                     start_move_annotation(state, output_id);
                 } else {
-                    start_annotation(state, output_id);
+                    start_annotation(state, output_id, active_tool);
                 }
             }
             BTN_LEFT
@@ -416,6 +415,10 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         return;
     }
 
+    if apply_annotation_palette_shortcut(state, key) {
+        return;
+    }
+
     match key {
         KEY_ESC if state.config.close_key.is_none() => state.request_exit(),
         KEY_D => toggle_annotation_mode(state, InteractionMode::AnnotateZoomed),
@@ -486,6 +489,15 @@ fn copy_screenshot_to_clipboard(state: &mut AppState, serial: u32) {
 }
 
 fn handle_key_action(state: &mut AppState, key: u32) {
+    if state.interaction_mode.is_annotating() {
+        match key {
+            KEY_LEFTBRACE => adjust_annotation_text_scale(state, -1),
+            KEY_RIGHTBRACE => adjust_annotation_text_scale(state, 1),
+            _ => {}
+        }
+        return;
+    }
+
     match key {
         KEY_LEFTBRACE => {
             adjust_spotlight_radius(state, -0.05);
@@ -501,10 +513,6 @@ fn handle_key_action(state: &mut AppState, key: u32) {
     let Some(output_id) = state.focused_window else {
         return;
     };
-
-    if state.interaction_mode.is_annotating() {
-        return;
-    }
 
     match key {
         KEY_EQUAL | KEY_KPPLUS => {
@@ -584,10 +592,11 @@ fn set_tool_override(state: &mut AppState, tool: Option<AnnotationTool>) {
     overlay::update_annotation_overlays(state);
 }
 
-fn start_annotation(state: &mut AppState, output_id: u32) {
+fn start_annotation(state: &mut AppState, output_id: u32, tool: AnnotationTool) {
     let point = state.windows.get(&output_id).map(|window| {
         screen_to_annotation_point(state, output_id, window.pointer_x, window.pointer_y)
     });
+    let color = state.annotation_color_for(tool);
 
     let Some(point) = point else {
         return;
@@ -595,7 +604,7 @@ fn start_annotation(state: &mut AppState, output_id: u32) {
 
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.pointer_pressed = true;
-        window.active_annotation = Some(ActiveAnnotation::new(state.annotation_tool, point));
+        window.active_annotation = Some(ActiveAnnotation::new(tool, point, color));
         window.active_move = None;
     }
     overlay::update_annotation_overlays(state);
@@ -693,7 +702,8 @@ fn start_text_entry(state: &mut AppState, output_id: u32) {
     let Some(point) = point else {
         return;
     };
-    let text_color = state.effective_annotation_tool().color();
+    let text_scale = state.text_annotation_scale;
+    let text_color = state.annotation_color_for(AnnotationTool::Text);
 
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.pointer_pressed = false;
@@ -703,7 +713,7 @@ fn start_text_entry(state: &mut AppState, output_id: u32) {
             position: point,
             text: String::new(),
             color: text_color,
-            scale: TEXT_ANNOTATION_SCALE,
+            scale: text_scale,
         });
     }
     overlay::update_annotation_overlays(state);
@@ -713,6 +723,21 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
     let Some(output_id) = active_text_output_id(state) else {
         return false;
     };
+
+    if let Some(index) = palette_index_for_key(key) {
+        let changed = state.select_annotation_color(index);
+        let color = state.annotation_color_for(AnnotationTool::Text);
+        if let Some(window) = state.windows.get_mut(&output_id)
+            && let Some(text) = window.active_text.as_mut()
+        {
+            text.color = color;
+        }
+        if changed {
+            overlay::refresh_zoom_badge_overlays(state);
+        }
+        overlay::refresh_annotation_overlay(state, output_id);
+        return true;
+    }
 
     match key {
         KEY_ENTER => commit_or_discard_active_text_entry(state, output_id),
@@ -724,6 +749,8 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
             }
             overlay::refresh_annotation_overlay(state, output_id);
         }
+        KEY_LEFTBRACE => adjust_annotation_text_scale(state, -1),
+        KEY_RIGHTBRACE => adjust_annotation_text_scale(state, 1),
         KEY_ESC => {
             if state.tool_override == Some(AnnotationTool::Text) {
                 commit_or_discard_active_text_entry(state, output_id);
@@ -973,6 +1000,62 @@ fn adjust_spotlight_radius(state: &mut AppState, delta: f64) {
     }
 }
 
+fn apply_annotation_palette_shortcut(state: &mut AppState, key: u32) -> bool {
+    if !state.interaction_mode.is_annotating() {
+        return false;
+    }
+
+    let Some(index) = palette_index_for_key(key) else {
+        return false;
+    };
+
+    if state.select_annotation_color(index) {
+        overlay::refresh_zoom_badge_overlays(state);
+    }
+    true
+}
+
+fn palette_index_for_key(key: u32) -> Option<usize> {
+    match key {
+        KEY_1 => Some(0),
+        KEY_2 => Some(1),
+        KEY_3 => Some(2),
+        KEY_4 => Some(3),
+        KEY_5 => Some(4),
+        KEY_6 => Some(5),
+        KEY_7 => Some(6),
+        KEY_8 => Some(7),
+        KEY_9 => Some(8),
+        KEY_0 => Some(9),
+        KEY_MINUS => Some(10),
+        KEY_EQUAL => Some(11),
+        _ => None,
+    }
+}
+
+fn adjust_annotation_text_scale(state: &mut AppState, delta: i32) {
+    if !state.adjust_text_annotation_scale(delta) {
+        return;
+    }
+
+    let scale = state.text_annotation_scale;
+    let output_ids = state
+        .windows
+        .iter_mut()
+        .filter_map(|(output_id, window)| {
+            window.active_text.as_mut().map(|text| {
+                text.scale = scale;
+                *output_id
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for output_id in output_ids {
+        overlay::refresh_annotation_overlay(state, output_id);
+    }
+    overlay::refresh_zoom_badge_overlays(state);
+}
+
 fn is_repeatable_key(key: u32) -> bool {
     matches!(
         key,
@@ -1077,11 +1160,14 @@ mod tests {
     use wayland_client::protocol::wl_keyboard;
     use xkbcommon::xkb;
 
-    use crate::config::{APP_ID, CloseKey, Config};
+    use crate::{
+        config::{APP_ID, CloseKey, Config},
+        state::DEFAULT_TEXT_ANNOTATION_SCALE,
+    };
 
     use super::{
-        AnnotationTool, AppState, InteractionMode, KEY_C, KEY_ESC, KEY_L, KEY_M, KEY_T,
-        ctrl_modifier_active, handle_key_event, is_copy_screenshot_shortcut,
+        AnnotationTool, AppState, InteractionMode, KEY_3, KEY_C, KEY_ESC, KEY_L, KEY_M,
+        KEY_RIGHTBRACE, KEY_T, ctrl_modifier_active, handle_key_event, is_copy_screenshot_shortcut,
         select_annotation_tool,
     };
 
@@ -1241,6 +1327,34 @@ mod tests {
 
         assert!(!ctrl_modifier_active(&state));
         assert!(!is_copy_screenshot_shortcut(&state, KEY_C));
+    }
+
+    #[test]
+    fn palette_shortcuts_change_annotation_color_in_draw_mode() {
+        let mut state = AppState::new(test_config());
+        state.interaction_mode = InteractionMode::AnnotateZoomed;
+
+        handle_key_event(&mut state, KEY_3, wl_keyboard::KeyState::Pressed, 0);
+
+        assert_eq!(state.annotation_color_index, 2);
+    }
+
+    #[test]
+    fn text_size_shortcuts_adjust_default_text_scale_in_draw_mode() {
+        let mut state = AppState::new(test_config());
+        state.interaction_mode = InteractionMode::AnnotateZoomed;
+
+        handle_key_event(
+            &mut state,
+            KEY_RIGHTBRACE,
+            wl_keyboard::KeyState::Pressed,
+            0,
+        );
+
+        assert_eq!(
+            state.text_annotation_scale,
+            DEFAULT_TEXT_ANNOTATION_SCALE + 1
+        );
     }
 }
 

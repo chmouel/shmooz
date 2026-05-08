@@ -19,6 +19,8 @@ Controls:
   Annotation:
     Left click + drag     Draw, or move annotations while move mode is active
     Left click            Place text when text mode is active
+    1-0 / - / =           Select one of 12 preset annotation colors
+    [ / ]                 Decrease/increase text height
     p                     Pen
     h                     Highlighter
     m                     Toggle move mode for existing annotations
