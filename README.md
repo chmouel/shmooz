@@ -8,9 +8,7 @@ Zoom, annotate, and capture the current Wayland view.
 
 * Flow
 
-
-https://github.com/user-attachments/assets/efd263c9-2e9d-4af9-91a5-01ab91301e3b
-
+https://github.com/user-attachments/assets/7f517044-b52f-477b-8721-d22397a73a75
 
 * Zoom
 
