@@ -81,6 +81,8 @@ const KEYBOARD_ZOOM_IN_FACTOR: f64 = 0.90;
 const KEYBOARD_ZOOM_OUT_FACTOR: f64 = 1.0 / KEYBOARD_ZOOM_IN_FACTOR;
 const SCROLL_ZOOM_BASE_FACTOR: f64 = 0.92;
 const SCROLL_ZOOM_UNIT: f64 = 10.0;
+const SCROLL_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(80);
+const RESET_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const MOVE_HIT_RADIUS: f64 = 12.0;
 const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
@@ -379,7 +381,12 @@ fn pointer_axis(state: &mut AppState, value: f64) {
         scroll = -scroll;
     }
 
-    zoom_focused_window_at_pointer(state, output_id, SCROLL_ZOOM_BASE_FACTOR.powf(scroll));
+    zoom_focused_window_at_pointer(
+        state,
+        output_id,
+        SCROLL_ZOOM_BASE_FACTOR.powf(scroll),
+        SCROLL_ZOOM_ANIMATION_DURATION,
+    );
 }
 
 fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyState, serial: u32) {
@@ -877,7 +884,7 @@ fn animate_focused_window_to_initial(state: &mut AppState, output_id: u32) {
         return;
     };
 
-    window::animate_window_to_view(state, output_id, target, window::ZOOM_ANIMATION_DURATION);
+    window::animate_window_to_view(state, output_id, target, RESET_ZOOM_ANIMATION_DURATION);
 }
 
 fn restore_all_windows(state: &mut AppState) {
@@ -958,10 +965,21 @@ fn tail_chars(text: &str, max_chars: usize) -> &str {
 fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_factor: f64) {
     let logical_size = logical_size(state, output_id);
     let center = screen_center(logical_size);
-    zoom_focused_window(state, output_id, zoom_factor, center);
+    zoom_focused_window(
+        state,
+        output_id,
+        zoom_factor,
+        center,
+        window::ZOOM_ANIMATION_DURATION,
+    );
 }
 
-fn zoom_focused_window_at_pointer(state: &mut AppState, output_id: u32, zoom_factor: f64) {
+fn zoom_focused_window_at_pointer(
+    state: &mut AppState,
+    output_id: u32,
+    zoom_factor: f64,
+    duration: Duration,
+) {
     let logical_size = logical_size(state, output_id);
     let center = state
         .windows
@@ -971,10 +989,16 @@ fn zoom_focused_window_at_pointer(state: &mut AppState, output_id: u32, zoom_fac
             y: window.pointer_y,
         })
         .unwrap_or_else(|| screen_center(logical_size));
-    zoom_focused_window(state, output_id, zoom_factor, center);
+    zoom_focused_window(state, output_id, zoom_factor, center, duration);
 }
 
-fn zoom_focused_window(state: &mut AppState, output_id: u32, zoom_factor: f64, center: Point) {
+fn zoom_focused_window(
+    state: &mut AppState,
+    output_id: u32,
+    zoom_factor: f64,
+    center: Point,
+    duration: Duration,
+) {
     let logical_size = logical_size(state, output_id);
     let buffer_size = buffer_size(state, output_id);
 
@@ -989,7 +1013,7 @@ fn zoom_focused_window(state: &mut AppState, output_id: u32, zoom_factor: f64, c
     };
 
     zoom_towards_factor(&mut target, zoom_factor, center, logical_size, buffer_size);
-    window::animate_window_to_view(state, output_id, target, window::ZOOM_ANIMATION_DURATION);
+    window::animate_window_to_view(state, output_id, target, duration);
 }
 
 fn adjust_spotlight_radius(state: &mut AppState, delta: f64) {
