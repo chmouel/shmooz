@@ -724,21 +724,6 @@ fn handle_active_text_input(state: &mut AppState, key: u32) -> bool {
         return false;
     };
 
-    if let Some(index) = palette_index_for_key(key) {
-        let changed = state.select_annotation_color(index);
-        let color = state.annotation_color_for(AnnotationTool::Text);
-        if let Some(window) = state.windows.get_mut(&output_id)
-            && let Some(text) = window.active_text.as_mut()
-        {
-            text.color = color;
-        }
-        if changed {
-            overlay::refresh_zoom_badge_overlays(state);
-        }
-        overlay::refresh_annotation_overlay(state, output_id);
-        return true;
-    }
-
     match key {
         KEY_ENTER => commit_or_discard_active_text_entry(state, output_id),
         KEY_BACKSPACE => {
@@ -1009,10 +994,44 @@ fn apply_annotation_palette_shortcut(state: &mut AppState, key: u32) -> bool {
         return false;
     };
 
-    if state.select_annotation_color(index) {
+    apply_annotation_palette_index(state, index);
+    true
+}
+
+fn apply_annotation_palette_index(state: &mut AppState, index: usize) {
+    let palette_changed = state.select_annotation_color(index);
+    let palette_color = state.selected_palette_color();
+    let mut refreshed_outputs = Vec::new();
+
+    for (output_id, window) in &mut state.windows {
+        let mut overlay_changed = false;
+
+        if let Some(active_annotation) = window.active_annotation.as_mut() {
+            active_annotation.recolor(palette_color);
+            overlay_changed = true;
+        }
+        if let Some(text) = window.active_text.as_mut() {
+            text.recolor(palette_color);
+            overlay_changed = true;
+        }
+        if let Some(active_move) = window.active_move
+            && let Some(annotation) = window.annotations.get_mut(active_move.annotation_index)
+        {
+            annotation.recolor(palette_color);
+            overlay_changed = true;
+        }
+
+        if overlay_changed {
+            refreshed_outputs.push(*output_id);
+        }
+    }
+
+    if palette_changed {
         overlay::refresh_zoom_badge_overlays(state);
     }
-    true
+    for output_id in refreshed_outputs {
+        overlay::refresh_annotation_overlay(state, output_id);
+    }
 }
 
 fn palette_index_for_key(key: u32) -> Option<usize> {
@@ -1162,13 +1181,13 @@ mod tests {
 
     use crate::{
         config::{APP_ID, CloseKey, Config},
-        state::DEFAULT_TEXT_ANNOTATION_SCALE,
+        state::{ANNOTATION_COLOR_PALETTE, ActiveAnnotation, DEFAULT_TEXT_ANNOTATION_SCALE},
     };
 
     use super::{
-        AnnotationTool, AppState, InteractionMode, KEY_3, KEY_C, KEY_ESC, KEY_L, KEY_M,
-        KEY_RIGHTBRACE, KEY_T, ctrl_modifier_active, handle_key_event, is_copy_screenshot_shortcut,
-        select_annotation_tool,
+        AnnotationPoint, AnnotationTool, AppState, InteractionMode, KEY_1, KEY_3, KEY_C, KEY_ESC,
+        KEY_L, KEY_M, KEY_RIGHTBRACE, KEY_T, apply_annotation_palette_index, ctrl_modifier_active,
+        current_text_input, handle_key_event, is_copy_screenshot_shortcut, select_annotation_tool,
     };
 
     fn test_config() -> Config {
@@ -1337,6 +1356,31 @@ mod tests {
         handle_key_event(&mut state, KEY_3, wl_keyboard::KeyState::Pressed, 0);
 
         assert_eq!(state.annotation_color_index, 2);
+    }
+
+    #[test]
+    fn palette_updates_active_annotation_preview_color() {
+        let mut annotation = ActiveAnnotation::new(
+            AnnotationTool::Pen,
+            AnnotationPoint { x: 10, y: 20 },
+            ANNOTATION_COLOR_PALETTE[0].value,
+        );
+        let mut state = AppState::new(test_config());
+
+        apply_annotation_palette_index(&mut state, 3);
+        annotation.recolor(state.selected_palette_color());
+
+        let ActiveAnnotation::Stroke(stroke) = annotation else {
+            panic!("stroke annotation expected");
+        };
+        assert_eq!(stroke.color, ANNOTATION_COLOR_PALETTE[3].value);
+    }
+
+    #[test]
+    fn current_text_input_accepts_digits() {
+        let mut state = AppState::new(test_config());
+
+        assert_eq!(current_text_input(&mut state, KEY_1).as_deref(), Some("1"));
     }
 
     #[test]

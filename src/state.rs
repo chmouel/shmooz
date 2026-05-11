@@ -272,7 +272,33 @@ pub struct ActiveMove {
     pub last_point: AnnotationPoint,
 }
 
+impl StrokeAnnotation {
+    pub fn recolor(&mut self, palette_color: u32) {
+        self.color = recolor_annotation_color(self.color, palette_color);
+    }
+}
+
+impl ShapeAnnotation {
+    pub fn recolor(&mut self, palette_color: u32) {
+        self.color = recolor_annotation_color(self.color, palette_color);
+    }
+}
+
+impl TextAnnotation {
+    pub fn recolor(&mut self, palette_color: u32) {
+        self.color = recolor_annotation_color(self.color, palette_color);
+    }
+}
+
 impl AnnotationItem {
+    pub fn recolor(&mut self, palette_color: u32) {
+        match self {
+            Self::Stroke(stroke) => stroke.recolor(palette_color),
+            Self::Shape(shape) => shape.recolor(palette_color),
+            Self::Text(text) => text.recolor(palette_color),
+        }
+    }
+
     pub fn translate(&mut self, dx: i32, dy: i32) {
         match self {
             Self::Stroke(stroke) => {
@@ -336,6 +362,13 @@ impl ActiveAnnotation {
         }
     }
 
+    pub fn recolor(&mut self, palette_color: u32) {
+        match self {
+            Self::Stroke(stroke) => stroke.recolor(palette_color),
+            Self::Shape(shape) => shape.recolor(palette_color),
+        }
+    }
+
     pub fn finish(self) -> Option<AnnotationItem> {
         match self {
             Self::Stroke(stroke) if stroke.points.len() >= 2 => {
@@ -344,6 +377,15 @@ impl ActiveAnnotation {
             Self::Shape(shape) if shape.start != shape.end => Some(AnnotationItem::Shape(shape)),
             _ => None,
         }
+    }
+}
+
+fn recolor_annotation_color(current_color: u32, palette_color: u32) -> u32 {
+    let alpha = current_color >> 24;
+    if alpha == 0xFF {
+        palette_color
+    } else {
+        premultiply_alpha(palette_color, alpha)
     }
 }
 
@@ -743,9 +785,10 @@ mod tests {
     use crate::config::{APP_ID, CloseKey, Config};
 
     use super::{
-        ANNOTATION_COLOR_PALETTE, AnnotationItem, AnnotationPoint, AnnotationShapeKind,
-        AnnotationTool, AppState, InteractionMode, MAX_TEXT_ANNOTATION_SCALE, ShapeAnnotation,
-        StrokeAnnotation, TextAnnotation,
+        ANNOTATION_COLOR_PALETTE, ActiveAnnotation, AnnotationItem, AnnotationPoint,
+        AnnotationShapeKind, AnnotationTool, AppState, HIGHLIGHTER_ALPHA, InteractionMode,
+        MAX_TEXT_ANNOTATION_SCALE, ShapeAnnotation, StrokeAnnotation, TextAnnotation,
+        premultiply_alpha,
     };
 
     fn test_config() -> Config {
@@ -801,6 +844,45 @@ mod tests {
         });
         assert!(text.hit_test(AnnotationPoint { x: 60, y: 60 }, 4.0));
         assert!(!text.hit_test(AnnotationPoint { x: 10, y: 10 }, 4.0));
+    }
+
+    #[test]
+    fn annotation_item_recolor_preserves_existing_alpha() {
+        let original = premultiply_alpha(ANNOTATION_COLOR_PALETTE[4].value, HIGHLIGHTER_ALPHA);
+        let mut annotation = AnnotationItem::Stroke(StrokeAnnotation {
+            points: vec![
+                AnnotationPoint { x: 10, y: 10 },
+                AnnotationPoint { x: 40, y: 10 },
+            ],
+            color: original,
+            width: AnnotationTool::Highlighter.stroke_width(),
+        });
+
+        annotation.recolor(ANNOTATION_COLOR_PALETTE[1].value);
+
+        let AnnotationItem::Stroke(stroke) = annotation else {
+            panic!("stroke annotation expected");
+        };
+        assert_eq!(
+            stroke.color,
+            premultiply_alpha(ANNOTATION_COLOR_PALETTE[1].value, HIGHLIGHTER_ALPHA)
+        );
+    }
+
+    #[test]
+    fn active_annotation_recolor_updates_shape_preview_color() {
+        let mut annotation = ActiveAnnotation::new(
+            AnnotationTool::Rectangle,
+            AnnotationPoint { x: 20, y: 30 },
+            ANNOTATION_COLOR_PALETTE[0].value,
+        );
+
+        annotation.recolor(ANNOTATION_COLOR_PALETTE[3].value);
+
+        let ActiveAnnotation::Shape(shape) = annotation else {
+            panic!("shape annotation expected");
+        };
+        assert_eq!(shape.color, ANNOTATION_COLOR_PALETTE[3].value);
     }
 
     #[test]
