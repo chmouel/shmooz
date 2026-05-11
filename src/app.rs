@@ -56,6 +56,7 @@ pub fn run() -> Result<()> {
         EventLoop::try_new().map_err(|err| AppError::event_loop("create event loop", err))?;
     context.state.loop_signal = Some(event_loop.get_signal());
     install_repeat_timer(&event_loop, &context.state)?;
+    install_animation_timer(&event_loop)?;
 
     WaylandSource::new(context.connection, context.event_queue)
         .insert(event_loop.handle())
@@ -130,6 +131,20 @@ fn install_repeat_timer(event_loop: &EventLoop<'_, AppState>, state: &AppState) 
             TimeoutAction::ToDuration(state.repeat_interval)
         })
         .map_err(|err| AppError::event_loop("insert repeat timer", err))?;
+
+    Ok(())
+}
+
+fn install_animation_timer(event_loop: &EventLoop<'_, AppState>) -> Result<()> {
+    let interval = Duration::from_millis(16);
+
+    event_loop
+        .handle()
+        .insert_source(Timer::from_duration(interval), move |_, _, state| {
+            window::tick_zoom_animations(state);
+            TimeoutAction::ToDuration(interval)
+        })
+        .map_err(|err| AppError::event_loop("insert animation timer", err))?;
 
     Ok(())
 }

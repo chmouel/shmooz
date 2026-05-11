@@ -15,7 +15,7 @@ use crate::{
         KeyboardTextState, TextAnnotation,
     },
     window,
-    zoom::{Point, Size, apply_zoom, restore_view, screen_center},
+    zoom::{Point, Size, restore_view, screen_center, zoom_towards_factor},
 };
 
 const BTN_LEFT: u32 = 0x110;
@@ -77,7 +77,10 @@ const KEY_DOWN: u32 = 108;
 
 const DOUBLE_CLICK_TIME_MS: u32 = 400;
 const KEYBOARD_PAN_STEP: f64 = 50.0;
-const KEYBOARD_ZOOM_STEP: f64 = 10.0;
+const KEYBOARD_ZOOM_IN_FACTOR: f64 = 0.90;
+const KEYBOARD_ZOOM_OUT_FACTOR: f64 = 1.0 / KEYBOARD_ZOOM_IN_FACTOR;
+const SCROLL_ZOOM_BASE_FACTOR: f64 = 0.92;
+const SCROLL_ZOOM_UNIT: f64 = 10.0;
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const MOVE_HIT_RADIUS: f64 = 12.0;
 const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
@@ -263,6 +266,7 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
 
     if pointer_pressed {
         let scale = view_scale(state, output_id);
+        window::cancel_zoom_animation(state, output_id);
         if let Some(window) = state.windows.get_mut(&output_id) {
             window.view_source.x -= delta_x * scale;
             window.view_source.y -= delta_y * scale;
@@ -339,7 +343,6 @@ fn pointer_button(
 
                 if let Some(window) = state.windows.get_mut(&output_id) {
                     if is_double_click {
-                        restore_view(&mut window.view_source, window.initial_view_source);
                         window.last_click_time = 0;
                     } else {
                         window.last_click_time = time;
@@ -349,7 +352,7 @@ fn pointer_button(
                 }
 
                 if is_double_click {
-                    window::render_window(state, output_id);
+                    animate_focused_window_to_initial(state, output_id);
                 }
             } else if let Some(window) = state.windows.get_mut(&output_id) {
                 window.pointer_pressed = false;
@@ -371,13 +374,12 @@ fn pointer_axis(state: &mut AppState, value: f64) {
         return;
     };
 
-    let scale = scroll_scale(state, output_id);
-    let mut scroll = value * scale * 10.0;
+    let mut scroll = value / SCROLL_ZOOM_UNIT;
     if state.config.invert_scroll {
         scroll = -scroll;
     }
 
-    zoom_focused_window_at_pointer(state, output_id, scroll);
+    zoom_focused_window_at_pointer(state, output_id, SCROLL_ZOOM_BASE_FACTOR.powf(scroll));
 }
 
 fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyState, serial: u32) {
@@ -516,10 +518,10 @@ fn handle_key_action(state: &mut AppState, key: u32) {
 
     match key {
         KEY_EQUAL | KEY_KPPLUS => {
-            zoom_focused_window_at_center(state, output_id, KEYBOARD_ZOOM_STEP);
+            zoom_focused_window_at_center(state, output_id, KEYBOARD_ZOOM_IN_FACTOR);
         }
         KEY_MINUS | KEY_KPMINUS => {
-            zoom_focused_window_at_center(state, output_id, -KEYBOARD_ZOOM_STEP);
+            zoom_focused_window_at_center(state, output_id, KEYBOARD_ZOOM_OUT_FACTOR);
         }
         KEY_LEFT => pan_focused_window(state, output_id, -KEYBOARD_PAN_STEP, 0.0),
         KEY_RIGHT => pan_focused_window(state, output_id, KEYBOARD_PAN_STEP, 0.0),
@@ -863,15 +865,25 @@ fn restore_focused_window(state: &mut AppState) {
         return;
     };
 
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        restore_view(&mut window.view_source, window.initial_view_source);
-    }
-    window::render_window(state, output_id);
+    animate_focused_window_to_initial(state, output_id);
+}
+
+fn animate_focused_window_to_initial(state: &mut AppState, output_id: u32) {
+    let Some(target) = state
+        .windows
+        .get(&output_id)
+        .map(|window| window.initial_view_source)
+    else {
+        return;
+    };
+
+    window::animate_window_to_view(state, output_id, target, window::ZOOM_ANIMATION_DURATION);
 }
 
 fn restore_all_windows(state: &mut AppState) {
     let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
     for output_id in output_ids {
+        window::cancel_zoom_animation(state, output_id);
         if let Some(window) = state.windows.get_mut(&output_id) {
             restore_view(&mut window.view_source, window.initial_view_source);
         }
@@ -880,6 +892,7 @@ fn restore_all_windows(state: &mut AppState) {
 }
 
 fn pan_focused_window(state: &mut AppState, output_id: u32, dx: f64, dy: f64) {
+    window::cancel_zoom_animation(state, output_id);
     if let Some(window) = state.windows.get_mut(&output_id) {
         window.view_source.x += dx;
         window.view_source.y += dy;
@@ -942,13 +955,13 @@ fn tail_chars(text: &str, max_chars: usize) -> &str {
         .unwrap_or(text)
 }
 
-fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_change: f64) {
+fn zoom_focused_window_at_center(state: &mut AppState, output_id: u32, zoom_factor: f64) {
     let logical_size = logical_size(state, output_id);
     let center = screen_center(logical_size);
-    zoom_focused_window(state, output_id, zoom_change, center);
+    zoom_focused_window(state, output_id, zoom_factor, center);
 }
 
-fn zoom_focused_window_at_pointer(state: &mut AppState, output_id: u32, zoom_change: f64) {
+fn zoom_focused_window_at_pointer(state: &mut AppState, output_id: u32, zoom_factor: f64) {
     let logical_size = logical_size(state, output_id);
     let center = state
         .windows
@@ -958,23 +971,25 @@ fn zoom_focused_window_at_pointer(state: &mut AppState, output_id: u32, zoom_cha
             y: window.pointer_y,
         })
         .unwrap_or_else(|| screen_center(logical_size));
-    zoom_focused_window(state, output_id, zoom_change, center);
+    zoom_focused_window(state, output_id, zoom_factor, center);
 }
 
-fn zoom_focused_window(state: &mut AppState, output_id: u32, zoom_change: f64, center: Point) {
+fn zoom_focused_window(state: &mut AppState, output_id: u32, zoom_factor: f64, center: Point) {
     let logical_size = logical_size(state, output_id);
     let buffer_size = buffer_size(state, output_id);
 
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        apply_zoom(
-            &mut window.view_source,
-            zoom_change,
-            center,
-            logical_size,
-            buffer_size,
-        );
-    }
-    window::render_window(state, output_id);
+    let Some(mut target) = state.windows.get(&output_id).map(|window| {
+        window
+            .zoom_animation
+            .as_ref()
+            .map(|animation| animation.target)
+            .unwrap_or(window.view_source)
+    }) else {
+        return;
+    };
+
+    zoom_towards_factor(&mut target, zoom_factor, center, logical_size, buffer_size);
+    window::animate_window_to_view(state, output_id, target, window::ZOOM_ANIMATION_DURATION);
 }
 
 fn adjust_spotlight_radius(state: &mut AppState, delta: f64) {
@@ -1129,21 +1144,6 @@ fn view_scale(state: &AppState, output_id: u32) -> f64 {
                 1.0
             }
         })
-        .unwrap_or(1.0)
-}
-
-fn scroll_scale(state: &AppState, output_id: u32) -> f64 {
-    let geometry_width = state
-        .outputs
-        .get(&output_id)
-        .map(|output| output.geometry.width as f64)
-        .filter(|width| *width > 0.0)
-        .unwrap_or(1.0);
-
-    state
-        .windows
-        .get(&output_id)
-        .map(|window| window.view_source.width / geometry_width)
         .unwrap_or(1.0)
 }
 

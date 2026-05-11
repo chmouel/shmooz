@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use wayland_client::{
     Dispatch, QueueHandle, delegate_noop,
     protocol::{wl_callback, wl_subsurface, wl_surface},
@@ -11,10 +13,14 @@ use crate::{
     shm::ShmBuffer,
     state::AppState,
     state::{ActiveAnnotation, ActiveMove, AnnotationItem, TextAnnotation},
-    zoom::{Size, ViewRect, apply_zoom, aspect_ratio, clamp_view},
+    zoom::{
+        Size, ViewRect, apply_zoom, aspect_ratio, clamp_view, ease_out_cubic, interpolate_view,
+        view_rect_nearly_equal,
+    },
 };
 
 pub const APP_TITLE: &str = "shmooz";
+pub const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(140);
 
 pub struct OverlayBufferSlot {
     pub buffer: ShmBuffer,
@@ -52,6 +58,7 @@ pub struct WindowState {
     pub active_text: Option<TextAnnotation>,
     pub view_source: ViewRect,
     pub initial_view_source: ViewRect,
+    pub zoom_animation: Option<ZoomAnimation>,
     pub pointer_x: f64,
     pub pointer_y: f64,
     pub pointer_pressed: bool,
@@ -61,6 +68,13 @@ pub struct WindowState {
     pub configured_height: i32,
     pub is_configured: bool,
     pub initial_zoom_applied: bool,
+}
+
+pub struct ZoomAnimation {
+    pub start: ViewRect,
+    pub target: ViewRect,
+    pub started_at: Instant,
+    pub duration: Duration,
 }
 
 pub fn create_window_for_output(
@@ -166,6 +180,7 @@ pub fn create_window_for_output(
             active_text: None,
             view_source: initial_view_source,
             initial_view_source,
+            zoom_animation: None,
             pointer_x: logical_size.width / 2.0,
             pointer_y: logical_size.height / 2.0,
             pointer_pressed: false,
@@ -285,6 +300,73 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
 
 delegate_noop!(AppState: ignore wl_surface::WlSurface);
 delegate_noop!(AppState: ignore wp_viewport::WpViewport);
+
+pub fn animate_window_to_view(
+    state: &mut AppState,
+    output_id: u32,
+    target: ViewRect,
+    duration: Duration,
+) {
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return;
+    };
+
+    if view_rect_nearly_equal(window.view_source, target) {
+        window.view_source = target;
+        window.zoom_animation = None;
+        return;
+    }
+
+    window.zoom_animation = Some(ZoomAnimation {
+        start: window.view_source,
+        target,
+        started_at: Instant::now(),
+        duration,
+    });
+}
+
+pub fn cancel_zoom_animation(state: &mut AppState, output_id: u32) {
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.zoom_animation = None;
+    }
+}
+
+pub fn tick_zoom_animations(state: &mut AppState) {
+    let now = Instant::now();
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+
+    for output_id in output_ids {
+        if advance_zoom_animation(state, output_id, now) {
+            render_window(state, output_id);
+        }
+    }
+}
+
+fn advance_zoom_animation(state: &mut AppState, output_id: u32, now: Instant) -> bool {
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return false;
+    };
+    let Some(animation) = window.zoom_animation.as_ref() else {
+        return false;
+    };
+
+    let elapsed = now.saturating_duration_since(animation.started_at);
+    let progress = if animation.duration.is_zero() {
+        1.0
+    } else {
+        elapsed.as_secs_f64() / animation.duration.as_secs_f64()
+    };
+
+    if progress >= 1.0 {
+        window.view_source = animation.target;
+        window.zoom_animation = None;
+        return true;
+    }
+
+    window.view_source =
+        interpolate_view(animation.start, animation.target, ease_out_cubic(progress));
+    true
+}
 
 pub fn render_window(state: &mut AppState, output_id: u32) {
     let (surface, viewport, view_source, damage_width, damage_height) = {
