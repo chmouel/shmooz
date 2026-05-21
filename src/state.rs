@@ -37,13 +37,14 @@ use crate::{
 pub enum InteractionMode {
     #[default]
     Navigate,
+    ColorPicker,
     AnnotateZoomed,
     AnnotateUnzoomed,
 }
 
 impl InteractionMode {
     pub fn is_annotating(self) -> bool {
-        !matches!(self, Self::Navigate)
+        matches!(self, Self::AnnotateZoomed | Self::AnnotateUnzoomed)
     }
 
     pub fn badge(
@@ -64,11 +65,20 @@ impl InteractionMode {
                     BadgeLine::new(
                         "OTHER",
                         format!(
-                            "S save  Ctrl+C copy  F/[ ]  {} close",
+                            "S save  I pick  Ctrl+C  F/[ ]  {} close",
                             close_key.map(CloseKey::label).unwrap_or("Esc")
                         ),
                         0xFFF4_F4F4,
                     ),
+                ],
+            },
+            Self::ColorPicker => BadgeModel {
+                title: "COLOR".to_owned(),
+                subtitle: "Picker mode".to_owned(),
+                lines: [
+                    BadgeLine::new("MOVE", "Point at a color", 0xFFFF_C83D),
+                    BadgeLine::new("COPY", "Left click copies hex", 0xFFF4_F4F4),
+                    BadgeLine::new("EXIT", "Esc back", 0xFFF4_F4F4),
                 ],
             },
             Self::AnnotateZoomed | Self::AnnotateUnzoomed => match tool {
@@ -107,7 +117,7 @@ impl InteractionMode {
         match self {
             Self::AnnotateZoomed => "DRAW",
             Self::AnnotateUnzoomed => "DRAW NO ZOOM",
-            Self::Navigate => "NAVIGATE",
+            Self::Navigate | Self::ColorPicker => "NAVIGATE",
         }
     }
 }
@@ -617,6 +627,7 @@ pub struct AppState {
     pub annotation_color_index: usize,
     pub text_annotation_scale: usize,
     pub tool_override: Option<AnnotationTool>,
+    pub color_picker_copied: bool,
     pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
@@ -632,11 +643,13 @@ pub struct KeyboardTextState {
 
 pub struct ClipboardSelection {
     pub source: wl_data_source::WlDataSource,
+    pub mime_types: Vec<&'static str>,
     pub data: Vec<u8>,
 }
 
 pub struct PrimarySelection {
     pub source: zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+    pub mime_types: Vec<&'static str>,
     pub data: Vec<u8>,
 }
 
@@ -668,6 +681,7 @@ impl AppState {
             annotation_color_index: 0,
             text_annotation_scale: DEFAULT_TEXT_ANNOTATION_SCALE,
             tool_override: None,
+            color_picker_copied: false,
             keyboard_text: None,
             repeat_key: None,
             repeat_deadline: None,
@@ -908,7 +922,10 @@ mod tests {
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
-        assert_eq!(badge.lines[2].text, "S save  Ctrl+C copy  F/[ ]  Esc close");
+        assert_eq!(
+            badge.lines[2].text,
+            "S save  I pick  Ctrl+C  F/[ ]  Esc close"
+        );
     }
 
     #[test]
@@ -920,7 +937,10 @@ mod tests {
             Some(CloseKey::Q),
         );
 
-        assert_eq!(badge.lines[2].text, "S save  Ctrl+C copy  F/[ ]  Q close");
+        assert_eq!(
+            badge.lines[2].text,
+            "S save  I pick  Ctrl+C  F/[ ]  Q close"
+        );
     }
 
     #[test]

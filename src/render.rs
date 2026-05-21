@@ -278,6 +278,30 @@ pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, 
     );
 }
 
+pub fn paint_color_picker(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    color: u32,
+    hex: &str,
+    copied: bool,
+) {
+    pixels_u32(pixels).fill(0);
+
+    let color = 0xFF00_0000 | (color & 0x00FF_FFFF);
+    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
+    fill_rect(pixels, width, height, 0, 0, width, 3, color);
+    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    fill_rect(pixels, width, height, 18, 32, 86, 62, 0xFFFF_FFFF);
+    fill_rect(pixels, width, height, 21, 35, 80, 56, color);
+
+    draw_label(pixels, width, height, 122, 26, "COLOR", 2, 0xFFE7_BD73);
+    draw_label(pixels, width, height, 122, 50, hex, 3, 0xFFFF_FFFF);
+    if copied {
+        draw_label(pixels, width, height, 122, 82, "COPIED", 1, 0xFFFF_C83D);
+    }
+}
+
 fn draw_annotation_item(
     pixels: &mut [u32],
     width: usize,
@@ -928,6 +952,7 @@ fn lookup_glyph(ch: char) -> Option<&'static [u8; TEXT_GLYPH_HEIGHT]> {
         '9' => Some(&[0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C]),
         '!' => Some(&[0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04]),
         '"' => Some(&[0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00]),
+        '#' => Some(&[0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A]),
         '\'' => Some(&[0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00]),
         '(' => Some(&[0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02]),
         ')' => Some(&[0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08]),
@@ -961,7 +986,7 @@ mod tests {
 
     use super::{
         CursorStyle, OverlayCursor, draw_annotation_overlay, draw_spotlight_overlay, fill_rect,
-        lookup_glyph, paint_toast, paint_zoom_badge,
+        lookup_glyph, paint_color_picker, paint_toast, paint_zoom_badge,
     };
 
     #[test]
@@ -1098,6 +1123,16 @@ mod tests {
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn color_picker_renders_swatch_and_hex_text() {
+        let mut pixels = vec![0_u8; 320 * 112 * 4];
+
+        paint_color_picker(&mut pixels, 320, 112, 0xFF12_34AB, "#1234AB", true);
+
+        assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
+        assert!(lookup_glyph('#').is_some());
     }
 
     #[test]

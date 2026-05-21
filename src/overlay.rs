@@ -7,7 +7,7 @@ use wayland_client::{
 
 use crate::{
     error::{AppError, Result},
-    render,
+    render, screenshot,
     shm::ShmBuffer,
     state::{
         ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
@@ -25,6 +25,8 @@ pub const ZOOM_BADGE_MARGIN: i32 = 24;
 const TOAST_WIDTH: i32 = ZOOM_BADGE_WIDTH;
 const TOAST_HEIGHT: i32 = ZOOM_BADGE_HEIGHT;
 const TOAST_DURATION: Duration = Duration::from_secs(2);
+const COLOR_PICKER_WIDTH: i32 = 320;
+const COLOR_PICKER_HEIGHT: i32 = 112;
 
 #[derive(Clone, Copy)]
 struct AnnotationBufferKey {
@@ -50,6 +52,7 @@ pub fn create_overlays_for_window(
     create_annotation_overlay(state, output_id, qh)?;
     create_zoom_badge_overlay(state, output_id, qh)?;
     create_toast_overlay(state, output_id, qh)?;
+    create_color_picker_overlay(state, output_id, qh)?;
     update_window_overlays(state, output_id);
 
     Ok(())
@@ -60,6 +63,7 @@ pub fn update_window_overlays(state: &mut AppState, output_id: u32) {
     update_annotation_overlay(state, output_id);
     update_zoom_badge_overlay(state, output_id);
     update_toast_overlay(state, output_id);
+    update_color_picker_overlay(state, output_id);
 }
 
 pub fn update_spotlight_overlays(state: &mut AppState) {
@@ -93,6 +97,17 @@ pub fn refresh_zoom_badge_overlays(state: &mut AppState) {
     for output_id in output_ids {
         refresh_zoom_badge_overlay(state, output_id);
     }
+}
+
+pub fn update_color_picker_overlays(state: &mut AppState) {
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+    for output_id in output_ids {
+        update_color_picker_overlay(state, output_id);
+    }
+}
+
+pub fn refresh_color_picker_overlay(state: &mut AppState, output_id: u32) {
+    refresh_color_picker_overlay_inner(state, output_id);
 }
 
 pub fn show_toast(state: &mut AppState, output_id: u32, message: impl Into<String>) {
@@ -313,6 +328,43 @@ fn create_toast_overlay(
     Ok(())
 }
 
+fn create_color_picker_overlay(
+    state: &mut AppState,
+    output_id: u32,
+    qh: &QueueHandle<AppState>,
+) -> Result<()> {
+    let Some(subcompositor) = state.globals.subcompositor.clone() else {
+        return Ok(());
+    };
+
+    let compositor = state.globals.compositor()?;
+    let shm = state.globals.shm()?;
+
+    let buffer = ShmBuffer::create(
+        &shm,
+        qh,
+        wl_shm::Format::Argb8888,
+        COLOR_PICKER_WIDTH,
+        COLOR_PICKER_HEIGHT,
+        COLOR_PICKER_WIDTH * 4,
+    )?;
+
+    let surface = compositor.create_surface(qh, ());
+    let subsurface =
+        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
+    make_surface_input_transparent(&compositor, &surface, qh);
+    subsurface.set_desync();
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.color_picker_buffer = Some(buffer);
+        window.color_picker_surface = Some(surface);
+        window.color_picker_subsurface = Some(subsurface);
+    }
+    position_color_picker_subsurface(state, output_id);
+
+    Ok(())
+}
+
 fn make_surface_input_transparent(
     compositor: &wayland_client::protocol::wl_compositor::WlCompositor,
     surface: &wl_surface::WlSurface,
@@ -519,6 +571,37 @@ fn refresh_toast_overlay(state: &mut AppState, output_id: u32) {
     surface.commit();
 }
 
+fn refresh_color_picker_overlay_inner(state: &mut AppState, output_id: u32) {
+    let Ok(color) = screenshot::output_color_value_at_pointer(state, output_id) else {
+        return;
+    };
+    let hex = screenshot::rgb_hex(color);
+    position_color_picker_subsurface(state, output_id);
+
+    let copied = state.color_picker_copied;
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return;
+    };
+    let Some(surface) = window.color_picker_surface.as_ref() else {
+        return;
+    };
+    let Some(buffer) = window.color_picker_buffer.as_mut() else {
+        return;
+    };
+
+    render::paint_color_picker(
+        buffer.data.as_mut(),
+        COLOR_PICKER_WIDTH as usize,
+        COLOR_PICKER_HEIGHT as usize,
+        color,
+        &hex,
+        copied,
+    );
+    surface.attach(Some(&buffer.wl_buffer), 0, 0);
+    surface.damage(0, 0, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT);
+    surface.commit();
+}
+
 fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
     let should_show = state
         .windows
@@ -592,6 +675,23 @@ fn update_toast_overlay(state: &mut AppState, output_id: u32) {
     set_toast_visible(state, output_id, should_show);
     if should_show {
         refresh_toast_overlay(state, output_id);
+    }
+}
+
+fn update_color_picker_overlay(state: &mut AppState, output_id: u32) {
+    let should_show = state
+        .windows
+        .get(&output_id)
+        .map(|window| {
+            window.color_picker_surface.is_some()
+                && state.interaction_mode == crate::state::InteractionMode::ColorPicker
+                && cursor_visible_for_output(state, output_id)
+        })
+        .unwrap_or(false);
+
+    set_color_picker_visible(state, output_id, should_show);
+    if should_show {
+        refresh_color_picker_overlay_inner(state, output_id);
     }
 }
 
@@ -708,6 +808,34 @@ fn set_toast_visible(state: &mut AppState, output_id: u32, show: bool) {
     }
 }
 
+fn set_color_picker_visible(state: &mut AppState, output_id: u32, show: bool) {
+    let Some((was_visible, surface)) = state.windows.get(&output_id).map(|window| {
+        (
+            window.color_picker_visible,
+            window.color_picker_surface.as_ref().cloned(),
+        )
+    }) else {
+        return;
+    };
+    let Some(surface) = surface else {
+        return;
+    };
+
+    if was_visible == show {
+        return;
+    }
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.color_picker_visible = show;
+    }
+
+    if show {
+        refresh_color_picker_overlay_inner(state, output_id);
+    } else {
+        commit_surface_hide(&surface, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT);
+    }
+}
+
 fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
     state
         .outputs
@@ -725,8 +853,23 @@ fn commit_surface_hide(surface: &wl_surface::WlSurface, width: i32, height: i32)
 fn position_toast_subsurface(state: &AppState, output_id: u32) {
     let (width, _) = logical_size(state, output_id);
     let x = (width - TOAST_WIDTH - ZOOM_BADGE_MARGIN).max(0);
+    let y = if state.interaction_mode == crate::state::InteractionMode::ColorPicker {
+        ZOOM_BADGE_MARGIN + COLOR_PICKER_HEIGHT + 8
+    } else {
+        ZOOM_BADGE_MARGIN
+    };
     if let Some(window) = state.windows.get(&output_id)
         && let Some(subsurface) = window.toast_subsurface.as_ref()
+    {
+        subsurface.set_position(x, y);
+    }
+}
+
+fn position_color_picker_subsurface(state: &AppState, output_id: u32) {
+    let (width, _) = logical_size(state, output_id);
+    let x = (width - COLOR_PICKER_WIDTH - ZOOM_BADGE_MARGIN).max(0);
+    if let Some(window) = state.windows.get(&output_id)
+        && let Some(subsurface) = window.color_picker_subsurface.as_ref()
     {
         subsurface.set_position(x, ZOOM_BADGE_MARGIN);
     }

@@ -159,11 +159,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                 ..
             } => pointer_motion(state, surface_x, surface_y),
             wl_pointer::Event::Button {
+                serial,
                 time,
                 button,
                 state: WEnum::Value(button_state),
                 ..
-            } => pointer_button(state, time, button, button_state),
+            } => pointer_button(state, time, button, button_state, serial),
             wl_pointer::Event::Axis {
                 axis: WEnum::Value(wl_pointer::Axis::VerticalScroll),
                 value,
@@ -225,8 +226,12 @@ fn focus_surface(state: &mut AppState, surface: &wl_surface::WlSurface, x: f64, 
 
     if focus_changed {
         overlay::update_annotation_overlays(state);
+        overlay::update_color_picker_overlays(state);
     } else if let Some(output_id) = focused_output {
         overlay::refresh_annotation_overlay(state, output_id);
+        if state.interaction_mode == InteractionMode::ColorPicker {
+            overlay::refresh_color_picker_overlay(state, output_id);
+        }
     }
 }
 
@@ -247,6 +252,18 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
     };
     let delta_x = x - prev_x;
     let delta_y = y - prev_y;
+
+    if state.interaction_mode == InteractionMode::ColorPicker {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            window.pointer_x = x;
+            window.pointer_y = y;
+            window.pointer_pressed = false;
+        }
+        state.color_picker_copied = false;
+        overlay::refresh_annotation_overlay(state, output_id);
+        overlay::refresh_color_picker_overlay(state, output_id);
+        return;
+    }
 
     if state.interaction_mode.is_annotating() {
         let active_tool = state.effective_annotation_tool();
@@ -296,10 +313,24 @@ fn pointer_button(
     time: u32,
     button: u32,
     button_state: wl_pointer::ButtonState,
+    serial: u32,
 ) {
     let Some(output_id) = active_window_id(state) else {
         return;
     };
+
+    if state.interaction_mode == InteractionMode::ColorPicker {
+        match button {
+            BTN_LEFT if button_state == wl_pointer::ButtonState::Released => {
+                copy_color_to_clipboard(state, serial);
+            }
+            BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
+                state.request_exit();
+            }
+            _ => {}
+        }
+        return;
+    }
 
     if state.interaction_mode.is_annotating() {
         let active_tool = state.effective_annotation_tool();
@@ -368,7 +399,9 @@ fn pointer_button(
 }
 
 fn pointer_axis(state: &mut AppState, value: f64) {
-    if state.interaction_mode.is_annotating() {
+    if state.interaction_mode.is_annotating()
+        || state.interaction_mode == InteractionMode::ColorPicker
+    {
         return;
     }
 
@@ -401,6 +434,18 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         return;
     }
 
+    if key == KEY_ESC && state.interaction_mode == InteractionMode::ColorPicker {
+        set_interaction_mode(state, InteractionMode::Navigate);
+        return;
+    }
+
+    if state.interaction_mode == InteractionMode::ColorPicker {
+        if key == KEY_I {
+            toggle_color_picker_mode(state);
+        }
+        return;
+    }
+
     if key == KEY_ESC && state.interaction_mode.is_annotating() {
         if state.tool_override.is_some() {
             set_tool_override(state, None);
@@ -421,6 +466,11 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
 
     if is_copy_screenshot_shortcut(state, key) {
         copy_screenshot_to_clipboard(state, serial);
+        return;
+    }
+
+    if key == KEY_I {
+        toggle_color_picker_mode(state);
         return;
     }
 
@@ -497,6 +547,24 @@ fn copy_screenshot_to_clipboard(state: &mut AppState, serial: u32) {
     }
 }
 
+fn copy_color_to_clipboard(state: &mut AppState, serial: u32) {
+    if let Some(output_id) = active_window_id(state) {
+        if !clipboard::is_available(state) {
+            overlay::show_toast(state, output_id, CLIPBOARD_UNAVAILABLE_TOAST);
+            return;
+        }
+        match screenshot::output_color_at_pointer(state, output_id).and_then(|color| {
+            clipboard::set_text_selection(state, serial, color.clone()).map(|_| color)
+        }) {
+            Ok(_) => {
+                state.color_picker_copied = true;
+                overlay::refresh_color_picker_overlay(state, output_id);
+            }
+            Err(err) => state.record_fatal(err),
+        }
+    }
+}
+
 fn handle_key_action(state: &mut AppState, key: u32) {
     if state.interaction_mode.is_annotating() {
         match key {
@@ -547,20 +615,31 @@ fn toggle_annotation_mode(state: &mut AppState, mode: InteractionMode) {
     set_interaction_mode(state, next_mode);
 }
 
+fn toggle_color_picker_mode(state: &mut AppState) {
+    let next_mode = if state.interaction_mode == InteractionMode::ColorPicker {
+        InteractionMode::Navigate
+    } else {
+        InteractionMode::ColorPicker
+    };
+    set_interaction_mode(state, next_mode);
+}
+
 fn set_interaction_mode(state: &mut AppState, mode: InteractionMode) {
     if mode == InteractionMode::AnnotateUnzoomed {
         restore_all_windows(state);
     }
 
     cancel_active_annotations(state);
-    if mode == InteractionMode::Navigate {
+    if !mode.is_annotating() {
         state.tool_override = None;
     }
+    state.color_picker_copied = false;
     state.interaction_mode = mode;
     state.stop_repeat();
     overlay::update_spotlight_overlays(state);
     overlay::refresh_zoom_badge_overlays(state);
     overlay::update_annotation_overlays(state);
+    overlay::update_color_picker_overlays(state);
 }
 
 fn select_annotation_tool(state: &mut AppState, tool: AnnotationTool) {

@@ -16,6 +16,12 @@ Controls:
     f                     Toggle spotlight dim overlay
     [ / ]                 Decrease/increase spotlight radius
 
+  Color picker:
+    i                     Toggle color picker
+    Mouse move            Update the swatch
+    Left click            Copy picked hex color
+    Esc                   Leave color picker
+
   Annotation:
     Left click + drag     Draw, or move annotations while move mode is active
     Left click            Place text when text mode is active

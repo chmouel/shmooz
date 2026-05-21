@@ -28,6 +28,7 @@ https://github.com/user-attachments/assets/7f517044-b52f-477b-8721-d22397a73a75
 * Toggle a spotlight around the pointer.
 * Annotate with pen, highlighter, line, rectangle, ellipse, text, and move tools.
 * Pick from a shared annotation color palette and adjust text size while annotating.
+* Pick the color under the pointer and copy it as a hex value.
 * Save the visible view as a screenshot or copy it to the Wayland clipboard.
 
 ## Usage
@@ -59,6 +60,13 @@ shmooz [options...]
 * `f` - Toggle spotlight
 * Right click - Exit
 * Double click - Reset view
+
+**Color picker**
+
+* `i` - Toggle the color picker
+* Mouse move - Update the swatch
+* Left click - Copy the picked hex color
+* `Esc` - Leave the color picker
 
 **Annotation**
 

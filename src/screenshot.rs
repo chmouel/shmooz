@@ -75,6 +75,54 @@ pub fn save_output(state: &AppState, output_id: u32) -> Result<PathBuf> {
     Ok(path)
 }
 
+pub fn output_color_at_pointer(state: &AppState, output_id: u32) -> Result<String> {
+    output_color_value_at_pointer(state, output_id).map(rgb_hex)
+}
+
+pub fn output_color_value_at_pointer(state: &AppState, output_id: u32) -> Result<u32> {
+    let output = state
+        .outputs
+        .get(&output_id)
+        .ok_or_else(|| AppError::runtime(format!("output {output_id} is not available")))?;
+    let window = state
+        .windows
+        .get(&output_id)
+        .ok_or_else(|| AppError::runtime(format!("window {output_id} is not available")))?;
+    let source = output
+        .buffer
+        .as_ref()
+        .ok_or_else(|| AppError::runtime(format!("output {output_id} has no captured buffer")))?;
+    let source_format = SourcePixelFormat::from_wl_shm(source.format)?;
+    if source.width <= 0 || source.height <= 0 {
+        return Err(AppError::runtime(format!(
+            "output {output_id} has invalid captured dimensions"
+        )));
+    }
+    let (logical_width, logical_height) = output.logical_size();
+    if logical_width <= 0 || logical_height <= 0 {
+        return Err(AppError::runtime(format!(
+            "output {output_id} has invalid logical dimensions"
+        )));
+    }
+
+    let normalized_x = (window.pointer_x / f64::from(logical_width)).clamp(0.0, 1.0);
+    let normalized_y = (window.pointer_y / f64::from(logical_height)).clamp(0.0, 1.0);
+    let source_x = window.view_source.x + normalized_x * window.view_source.width;
+    let source_y = window.view_source.y + normalized_y * window.view_source.height;
+
+    Ok(sample_bilinear(
+        &SourceFrame {
+            pixels: cast_slice::<u8, u32>(source.data.as_ref()),
+            width: source.width as usize,
+            height: source.height as usize,
+            stride: (source.stride / 4) as usize,
+            format: source_format,
+        },
+        source_x,
+        source_y,
+    ))
+}
+
 fn render_output(state: &AppState, output_id: u32) -> Result<RenderedScreenshot> {
     let output = state
         .outputs
@@ -329,9 +377,18 @@ fn rgba_bytes(pixels: &[u32]) -> Vec<u8> {
     rgba
 }
 
+pub fn rgb_hex(pixel: u32) -> String {
+    format!(
+        "#{:02X}{:02X}{:02X}",
+        (pixel >> 16) & 0xFF,
+        (pixel >> 8) & 0xFF,
+        pixel & 0xFF
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SourceFrame, SourcePixelFormat, encode_png_bytes, render_view};
+    use super::{SourceFrame, SourcePixelFormat, encode_png_bytes, render_view, rgb_hex};
     use crate::{render, zoom::ViewRect};
     use wayland_client::protocol::wl_shm;
 
@@ -451,5 +508,10 @@ mod tests {
         let encoded = encode_png_bytes(&[0xFFFF_0000], 1, 1).unwrap();
 
         assert_eq!(&encoded[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn rgb_hex_ignores_alpha_channel() {
+        assert_eq!(rgb_hex(0x8012_34AB), "#1234AB");
     }
 }

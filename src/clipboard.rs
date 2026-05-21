@@ -15,6 +15,7 @@ use crate::{
 };
 
 pub const PNG_MIME_TYPE: &str = "image/png";
+pub const TEXT_MIME_TYPES: &[&str] = &["text/plain;charset=utf-8", "text/plain"];
 
 pub fn is_available(state: &AppState) -> bool {
     (state.globals.data_device_manager.is_some() && state.globals.data_device.is_some())
@@ -23,6 +24,19 @@ pub fn is_available(state: &AppState) -> bool {
 }
 
 pub fn set_png_selection(state: &mut AppState, serial: u32, png: Vec<u8>) -> Result<()> {
+    set_selection(state, serial, png, &[PNG_MIME_TYPE])
+}
+
+pub fn set_text_selection(state: &mut AppState, serial: u32, text: String) -> Result<()> {
+    set_selection(state, serial, text.into_bytes(), TEXT_MIME_TYPES)
+}
+
+fn set_selection(
+    state: &mut AppState,
+    serial: u32,
+    data: Vec<u8>,
+    mime_types: &[&'static str],
+) -> Result<()> {
     clear_clipboard_selection(state);
     clear_primary_selection(state);
 
@@ -35,11 +49,14 @@ pub fn set_png_selection(state: &mut AppState, serial: u32, png: Vec<u8>) -> Res
         state.globals.data_device.clone(),
     ) {
         let source = manager.create_data_source(&queue_handle, ());
-        source.offer(PNG_MIME_TYPE.to_owned());
+        for mime_type in mime_types {
+            source.offer((*mime_type).to_owned());
+        }
         data_device.set_selection(Some(&source), serial);
         state.clipboard_selection = Some(ClipboardSelection {
             source,
-            data: png.clone(),
+            mime_types: mime_types.to_vec(),
+            data: data.clone(),
         });
     }
 
@@ -48,9 +65,15 @@ pub fn set_png_selection(state: &mut AppState, serial: u32, png: Vec<u8>) -> Res
         state.globals.primary_selection_device.clone(),
     ) {
         let source = manager.create_source(&queue_handle, ());
-        source.offer(PNG_MIME_TYPE.to_owned());
+        for mime_type in mime_types {
+            source.offer((*mime_type).to_owned());
+        }
         primary_device.set_selection(Some(&source), serial);
-        state.primary_selection = Some(PrimarySelection { source, data: png });
+        state.primary_selection = Some(PrimarySelection {
+            source,
+            mime_types: mime_types.to_vec(),
+            data,
+        });
     }
 
     if state.clipboard_selection.is_some() || state.primary_selection.is_some() {
@@ -180,7 +203,7 @@ fn send_selection(
         return;
     };
 
-    if mime_type != PNG_MIME_TYPE {
+    if !selection.mime_types.contains(&mime_type) {
         return;
     }
 
@@ -202,7 +225,7 @@ fn send_primary_selection(
         return;
     };
 
-    if mime_type != PNG_MIME_TYPE {
+    if !selection.mime_types.contains(&mime_type) {
         return;
     }
 
