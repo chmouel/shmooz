@@ -105,6 +105,8 @@ shmooz --screenshot-dir /tmp/shmooz-shots
 
 Build from source with Cargo, or install from the AUR on Arch.
 
+Install `wl-copy` from `wl-clipboard` for clipboard copies that stay pasteable after `shmooz` exits. Without it, clipboard copy falls back to the compositor clipboard while `shmooz` is running.
+
 ## Configure
 
 Example sway binding:
