@@ -101,6 +101,32 @@ pub fn draw_spotlight_overlay(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn blend_rect(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+) {
+    let left = x0.min(x1).max(0) as usize;
+    let right = x0.max(x1).min(width as i32) as usize;
+    let top = y0.min(y1).max(0) as usize;
+    let bottom = y0.max(y1).min(height as i32) as usize;
+
+    for yy in top..bottom {
+        let row_offset = yy * width;
+        for xx in left..right {
+            let index = row_offset + xx;
+            pixels[index] = alpha_over(pixels[index], color);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn draw_annotation_overlay(
     pixels: &mut [u8],
     width: usize,
@@ -109,6 +135,7 @@ pub fn draw_annotation_overlay(
     active_annotation: Option<&ActiveAnnotation>,
     active_text: Option<&TextAnnotation>,
     cursor: Option<OverlayCursor>,
+    shift_select_rect: Option<(AnnotationPoint, AnnotationPoint)>,
 ) {
     let pixels = pixels_u32(pixels);
     pixels.fill(0);
@@ -126,6 +153,30 @@ pub fn draw_annotation_overlay(
 
     if let Some(active_text) = active_text {
         draw_text_annotation(pixels, width, height, active_text);
+    }
+
+    if let Some((start, end)) = shift_select_rect {
+        blend_rect(
+            pixels,
+            width,
+            height,
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            0x253B_82F6,
+        );
+        draw_rectangle(
+            pixels,
+            width,
+            height,
+            start.x,
+            start.y,
+            end.x,
+            end.y,
+            0xCC3B_82F6,
+            1,
+        );
     }
 
     if let Some(cursor) = cursor {
@@ -1026,7 +1077,7 @@ mod tests {
             width: 4,
         })];
 
-        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None, None);
+        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None, None, None);
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -1042,7 +1093,7 @@ mod tests {
             width: 4,
         });
 
-        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None, None);
+        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None, None, None);
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -1062,6 +1113,7 @@ mod tests {
                 position: AnnotationPoint { x: 20, y: 18 },
                 style: CursorStyle::Crosshair,
             }),
+            None,
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
@@ -1082,6 +1134,7 @@ mod tests {
                 position: AnnotationPoint { x: 20, y: 12 },
                 style: CursorStyle::Hand,
             }),
+            None,
         );
 
         let hotspot = &pixels[(12 * 64 + 20) * 4..(12 * 64 + 21) * 4];
@@ -1153,6 +1206,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
@@ -1173,6 +1227,7 @@ mod tests {
             160,
             96,
             &[AnnotationItem::Text(text)],
+            None,
             None,
             None,
             None,

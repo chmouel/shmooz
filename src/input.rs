@@ -15,7 +15,7 @@ use crate::{
         KeyboardTextState, TextAnnotation,
     },
     window,
-    zoom::{Point, Size, restore_view, screen_center, zoom_towards_factor},
+    zoom::{Point, Size, ViewRect, restore_view, screen_center, zoom_towards_factor},
 };
 
 const BTN_LEFT: u32 = 0x110;
@@ -246,6 +246,21 @@ fn pointer_motion(state: &mut AppState, x: f64, y: f64) {
         return;
     };
 
+    let is_shift_selecting = state
+        .windows
+        .get(&output_id)
+        .map(|w| w.shift_select_start.is_some())
+        .unwrap_or(false);
+
+    if is_shift_selecting {
+        if let Some(window) = state.windows.get_mut(&output_id) {
+            window.pointer_x = x;
+            window.pointer_y = y;
+        }
+        overlay::refresh_annotation_overlay(state, output_id);
+        return;
+    }
+
     let (prev_x, prev_y, pointer_pressed) = match state.windows.get(&output_id) {
         Some(window) => (window.pointer_x, window.pointer_y, window.pointer_pressed),
         None => return,
@@ -365,30 +380,113 @@ fn pointer_button(
     match button {
         BTN_LEFT => {
             if button_state == wl_pointer::ButtonState::Pressed {
-                let is_double_click = state
-                    .windows
-                    .get(&output_id)
-                    .map(|window| {
-                        window.last_click_button == BTN_LEFT
-                            && time.saturating_sub(window.last_click_time) < DOUBLE_CLICK_TIME_MS
+                let is_shift = shift_modifier_active(state);
+                let is_double_click = !is_shift
+                    && state
+                        .windows
+                        .get(&output_id)
+                        .map(|window| {
+                            window.last_click_button == BTN_LEFT
+                                && time.saturating_sub(window.last_click_time)
+                                    < DOUBLE_CLICK_TIME_MS
+                        })
+                        .unwrap_or(false);
+
+                let start_pt = if is_shift {
+                    state.windows.get(&output_id).map(|window| {
+                        screen_to_annotation_point(
+                            state,
+                            output_id,
+                            window.pointer_x,
+                            window.pointer_y,
+                        )
                     })
-                    .unwrap_or(false);
+                } else {
+                    None
+                };
 
                 if let Some(window) = state.windows.get_mut(&output_id) {
                     if is_double_click {
                         window.last_click_time = 0;
-                    } else {
+                    } else if !is_shift {
                         window.last_click_time = time;
                         window.last_click_button = button;
                     }
                     window.pointer_pressed = true;
+
+                    if is_shift {
+                        window.shift_select_start = start_pt;
+                    }
                 }
 
                 if is_double_click {
                     animate_focused_window_to_initial(state, output_id);
                 }
-            } else if let Some(window) = state.windows.get_mut(&output_id) {
-                window.pointer_pressed = false;
+            } else {
+                let shift_select_start = state
+                    .windows
+                    .get(&output_id)
+                    .and_then(|w| w.shift_select_start);
+
+                if let Some(start_pt) = shift_select_start {
+                    let end_pt = state.windows.get(&output_id).map(|window| {
+                        screen_to_annotation_point(
+                            state,
+                            output_id,
+                            window.pointer_x,
+                            window.pointer_y,
+                        )
+                    });
+                    let start_screen = annotation_to_screen_point(state, output_id, start_pt);
+
+                    if let Some(end_pt) = end_pt
+                        && let Some(window) = state.windows.get_mut(&output_id)
+                    {
+                        window.pointer_pressed = false;
+                        window.shift_select_start = None;
+
+                        let dist_x = (window.pointer_x - start_screen.x).abs();
+                        let dist_y = (window.pointer_y - start_screen.y).abs();
+
+                        if dist_x >= 5.0 || dist_y >= 5.0 {
+                            let x_min = (start_pt.x.min(end_pt.x)) as f64;
+                            let x_max = (start_pt.x.max(end_pt.x)) as f64;
+                            let y_min = (start_pt.y.min(end_pt.y)) as f64;
+                            let y_max = (start_pt.y.max(end_pt.y)) as f64;
+
+                            let width = x_max - x_min;
+                            let height = y_max - y_min;
+
+                            let logical_size = logical_size(state, output_id);
+                            let buffer_size = buffer_size(state, output_id);
+                            let ratio = crate::zoom::aspect_ratio(logical_size, buffer_size);
+
+                            let center_x = (x_min + x_max) / 2.0;
+                            let center_y = (y_min + y_max) / 2.0;
+
+                            let target_width = width.max(height * ratio);
+                            let target_height = height.max(width / ratio);
+
+                            let mut target_rect = ViewRect {
+                                x: center_x - target_width / 2.0,
+                                y: center_y - target_height / 2.0,
+                                width: target_width,
+                                height: target_height,
+                            };
+
+                            crate::zoom::clamp_view(&mut target_rect, buffer_size, ratio);
+                            window::animate_window_to_view(
+                                state,
+                                output_id,
+                                target_rect,
+                                window::ZOOM_ANIMATION_DURATION,
+                            );
+                        }
+                    }
+                    overlay::refresh_annotation_overlay(state, output_id);
+                } else if let Some(window) = state.windows.get_mut(&output_id) {
+                    window.pointer_pressed = false;
+                }
             }
         }
         BTN_RIGHT if button_state == wl_pointer::ButtonState::Released => {
@@ -529,6 +627,14 @@ fn ctrl_modifier_active(state: &AppState) -> bool {
         keyboard_text
             .state
             .mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE)
+    })
+}
+
+fn shift_modifier_active(state: &AppState) -> bool {
+    state.keyboard_text.as_ref().is_some_and(|keyboard_text| {
+        keyboard_text
+            .state
+            .mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_EFFECTIVE)
     })
 }
 
@@ -1254,6 +1360,34 @@ fn move_hit_tolerance(state: &AppState, output_id: u32) -> f64 {
     (view_scale(state, output_id) * MOVE_HIT_RADIUS).max(2.0)
 }
 
+fn annotation_to_screen_point(state: &AppState, output_id: u32, point: AnnotationPoint) -> Point {
+    let logical_size = logical_size(state, output_id);
+    let Some(window) = state.windows.get(&output_id) else {
+        return Point {
+            x: point.x as f64,
+            y: point.y as f64,
+        };
+    };
+
+    if window.view_source.width <= 0.0
+        || window.view_source.height <= 0.0
+        || logical_size.width <= 0.0
+        || logical_size.height <= 0.0
+    {
+        return Point {
+            x: point.x as f64,
+            y: point.y as f64,
+        };
+    }
+
+    Point {
+        x: ((point.x as f64 - window.view_source.x) / window.view_source.width)
+            * logical_size.width,
+        y: ((point.y as f64 - window.view_source.y) / window.view_source.height)
+            * logical_size.height,
+    }
+}
+
 fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) -> AnnotationPoint {
     let logical_size = logical_size(state, output_id);
     let Some(window) = state.windows.get(&output_id) else {
@@ -1502,6 +1636,21 @@ mod tests {
             state.text_annotation_scale,
             DEFAULT_TEXT_ANNOTATION_SCALE + 1
         );
+    }
+
+    #[test]
+    fn annotation_to_screen_point_fallback_without_window() {
+        let state = AppState::new(test_config());
+        let point = AnnotationPoint { x: 42, y: 100 };
+        let screen = super::annotation_to_screen_point(&state, 1, point);
+        assert_eq!(screen.x, 42.0);
+        assert_eq!(screen.y, 100.0);
+    }
+
+    #[test]
+    fn shift_modifier_inactive_by_default() {
+        let state = AppState::new(test_config());
+        assert!(!super::shift_modifier_active(&state));
     }
 }
 

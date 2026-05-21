@@ -456,6 +456,14 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
         return;
     };
 
+    let shift_select_rect = state.windows.get(&output_id).and_then(|w| {
+        w.shift_select_start.map(|start| {
+            let start_projected = project_point(start, w.view_source, width as f64, height as f64);
+            let end_projected = AnnotationPoint::new(w.pointer_x, w.pointer_y);
+            (start_projected, end_projected)
+        })
+    });
+
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
     };
@@ -469,6 +477,7 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
         projected_active.as_ref(),
         projected_text.as_ref(),
         cursor,
+        shift_select_rect,
     );
     slot.busy = true;
     window.annotation_redraw_pending = false;
@@ -636,7 +645,8 @@ fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
                     || state.interaction_mode.is_annotating()
                     || !window.annotations.is_empty()
                     || window.active_annotation.is_some()
-                    || window.active_text.is_some())
+                    || window.active_text.is_some()
+                    || window.shift_select_start.is_some())
         })
         .unwrap_or(false);
 
@@ -894,6 +904,14 @@ pub fn draw_annotation_overlay_snapshot(
         return;
     };
 
+    let shift_select_rect = state.windows.get(&output_id).and_then(|w| {
+        w.shift_select_start.map(|start| {
+            let start_projected = project_point(start, w.view_source, width as f64, height as f64);
+            let end_projected = AnnotationPoint::new(w.pointer_x, w.pointer_y);
+            (start_projected, end_projected)
+        })
+    });
+
     render::draw_annotation_overlay(
         pixels,
         width,
@@ -902,6 +920,7 @@ pub fn draw_annotation_overlay_snapshot(
         projected_active.as_ref(),
         projected_text.as_ref(),
         cursor,
+        shift_select_rect,
     );
 }
 

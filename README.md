@@ -25,6 +25,7 @@ https://github.com/user-attachments/assets/7f517044-b52f-477b-8721-d22397a73a75
 ## Features
 
 * Zoom and pan the current output.
+* Zoom into a custom screen area using Shift + Left drag.
 * Toggle a spotlight around the pointer.
 * Annotate with pen, highlighter, line, rectangle, ellipse, text, and move tools.
 * Pick from a shared annotation color palette and adjust text size while annotating.
@@ -53,6 +54,7 @@ shmooz [options...]
 **Navigation**
 
 * Scroll - Zoom at the pointer
+* Shift + Left drag - Draw a box to zoom that area
 * Left drag - Pan
 * `+` / `-` - Zoom at screen center
 * Arrow keys - Pan
