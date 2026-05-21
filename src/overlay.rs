@@ -19,7 +19,7 @@ use crate::{
 
 const ANNOTATION_BUFFER_COUNT: usize = 3;
 const SPOTLIGHT_MOVE_THRESHOLD_SQ: f64 = 16.0;
-pub const ZOOM_BADGE_WIDTH: i32 = 480;
+pub const ZOOM_BADGE_WIDTH: i32 = 640;
 pub const ZOOM_BADGE_HEIGHT: i32 = 136;
 pub const ZOOM_BADGE_MARGIN: i32 = 24;
 const TOAST_WIDTH: i32 = ZOOM_BADGE_WIDTH;
@@ -53,6 +53,7 @@ pub fn create_overlays_for_window(
     create_zoom_badge_overlay(state, output_id, qh)?;
     create_toast_overlay(state, output_id, qh)?;
     create_color_picker_overlay(state, output_id, qh)?;
+    create_help_overlay(state, output_id, qh)?;
     update_window_overlays(state, output_id);
 
     Ok(())
@@ -64,6 +65,7 @@ pub fn update_window_overlays(state: &mut AppState, output_id: u32) {
     update_zoom_badge_overlay(state, output_id);
     update_toast_overlay(state, output_id);
     update_color_picker_overlay(state, output_id);
+    update_help_overlay(state, output_id);
 }
 
 pub fn update_spotlight_overlays(state: &mut AppState) {
@@ -519,11 +521,17 @@ fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
 
 fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
     let effective_tool = state.effective_annotation_tool();
+    let spotlight_radius_pct = if state.spotlight_enabled {
+        Some((state.spotlight_radius_frac * 100.0).round() as u32)
+    } else {
+        None
+    };
     let badge = state.interaction_mode.badge(
         effective_tool,
         state.selected_palette_color(),
         state.text_annotation_scale,
         state.config.close_key,
+        spotlight_radius_pct,
     );
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
@@ -843,6 +851,109 @@ fn set_color_picker_visible(state: &mut AppState, output_id: u32, show: bool) {
         refresh_color_picker_overlay_inner(state, output_id);
     } else {
         commit_surface_hide(&surface, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT);
+    }
+}
+
+fn create_help_overlay(
+    state: &mut AppState,
+    output_id: u32,
+    qh: &QueueHandle<AppState>,
+) -> Result<()> {
+    let Some(subcompositor) = state.globals.subcompositor.clone() else {
+        return Ok(());
+    };
+    let compositor = state.globals.compositor()?;
+    let shm = state.globals.shm()?;
+    let (w, h) = logical_size(state, output_id);
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+
+    let buffer = ShmBuffer::create(&shm, qh, wl_shm::Format::Argb8888, w, h, w * 4)?;
+    let surface = compositor.create_surface(qh, ());
+    let subsurface =
+        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
+    make_surface_input_transparent(&compositor, &surface, qh);
+    subsurface.set_position(0, 0);
+    subsurface.set_desync();
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.help_buffer = Some(buffer);
+        window.help_surface = Some(surface);
+        window.help_subsurface = Some(subsurface);
+    }
+
+    Ok(())
+}
+
+fn update_help_overlay(state: &mut AppState, output_id: u32) {
+    let should_show = state
+        .windows
+        .get(&output_id)
+        .map(|window| window.help_surface.is_some() && state.help_visible)
+        .unwrap_or(false);
+
+    set_help_visible(state, output_id, should_show);
+    if should_show {
+        refresh_help_overlay(state, output_id);
+    }
+}
+
+fn set_help_visible(state: &mut AppState, output_id: u32, show: bool) {
+    let Some((was_visible, surface)) = state
+        .windows
+        .get(&output_id)
+        .map(|window| (window.help_visible, window.help_surface.as_ref().cloned()))
+    else {
+        return;
+    };
+    let Some(surface) = surface else {
+        return;
+    };
+
+    if was_visible == show {
+        return;
+    }
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.help_visible = show;
+    }
+
+    if !show {
+        let (width, height) = logical_size(state, output_id);
+        commit_surface_hide(&surface, width, height);
+    }
+}
+
+fn refresh_help_overlay(state: &mut AppState, output_id: u32) {
+    let (width, height) = logical_size(state, output_id);
+    let close_key = state.config.close_key;
+
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return;
+    };
+    let Some(buffer) = window.help_buffer.as_mut() else {
+        return;
+    };
+    let Some(surface) = window.help_surface.as_ref() else {
+        return;
+    };
+
+    render::paint_help_overlay(
+        buffer.data.as_mut(),
+        width as usize,
+        height as usize,
+        close_key,
+    );
+    surface.attach(Some(&buffer.wl_buffer), 0, 0);
+    surface.damage(0, 0, width, height);
+    surface.commit();
+}
+
+pub fn update_help_overlays(state: &mut AppState) {
+    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
+    for output_id in output_ids {
+        update_help_overlay(state, output_id);
     }
 }
 

@@ -53,25 +53,32 @@ impl InteractionMode {
         annotation_color: u32,
         text_scale: usize,
         close_key: Option<CloseKey>,
+        spotlight_radius_pct: Option<u32>,
     ) -> BadgeModel {
         let text_height = text_scale.max(1) * TEXT_GLYPH_HEIGHT;
         match self {
-            Self::Navigate => BadgeModel {
-                title: "NAVIGATE".to_owned(),
-                subtitle: "View controls and quick entry points".to_owned(),
-                lines: [
-                    BadgeLine::new("MODE", "D draw  W draw no zoom", 0xFFFF_C83D),
-                    BadgeLine::new("VIEW", "+/- zoom  arrows pan  0 reset", 0xFFF4_F4F4),
-                    BadgeLine::new(
-                        "OTHER",
-                        format!(
-                            "S save  I pick  Ctrl+C  F/[ ]  {} close",
-                            close_key.map(CloseKey::label).unwrap_or("Esc")
+            Self::Navigate => {
+                let subtitle = match spotlight_radius_pct {
+                    Some(pct) => format!("Spotlight radius: {pct}%"),
+                    None => "View controls and quick entry points".to_owned(),
+                };
+                BadgeModel {
+                    title: "NAVIGATE".to_owned(),
+                    subtitle,
+                    lines: [
+                        BadgeLine::new("MODE", "D draw  W draw no zoom", 0xFFFF_C83D),
+                        BadgeLine::new("VIEW", "+/- zoom  arrows pan  0 reset", 0xFFF4_F4F4),
+                        BadgeLine::new(
+                            "OTHER",
+                            format!(
+                                "S save  Ctrl+C  ? help  {} close",
+                                close_key.map(CloseKey::label).unwrap_or("Esc")
+                            ),
+                            0xFFF4_F4F4,
                         ),
-                        0xFFF4_F4F4,
-                    ),
-                ],
-            },
+                    ],
+                }
+            }
             Self::ColorPicker => BadgeModel {
                 title: "COLOR".to_owned(),
                 subtitle: "Picker mode".to_owned(),
@@ -84,7 +91,7 @@ impl InteractionMode {
             Self::AnnotateZoomed | Self::AnnotateUnzoomed => match tool {
                 AnnotationTool::Move => BadgeModel {
                     title: self.annotate_badge_title().to_owned(),
-                    subtitle: "Modifier: MOVE".to_owned(),
+                    subtitle: format!("Modifier: MOVE  Size: {text_height}px"),
                     lines: [
                         BadgeLine::new("DRAG", "Drag existing annotation", 0xFFFF_C83D),
                         BadgeLine::new("NEXT", "P/H/L/R/E draw  T text  Esc", 0xFFF4_F4F4),
@@ -102,7 +109,7 @@ impl InteractionMode {
                 },
                 _ => BadgeModel {
                     title: self.annotate_badge_title().to_owned(),
-                    subtitle: format!("Tool: {}", tool.label()),
+                    subtitle: format!("Tool: {}  Size: {text_height}px", tool.label()),
                     lines: [
                         BadgeLine::new("DRAG", "Drag to draw", 0xFFFF_C83D),
                         BadgeLine::new("TOOL", "P/H paint  L/R/E shape  Esc", 0xFFF4_F4F4),
@@ -628,6 +635,7 @@ pub struct AppState {
     pub text_annotation_scale: usize,
     pub tool_override: Option<AnnotationTool>,
     pub color_picker_copied: bool,
+    pub help_visible: bool,
     pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
@@ -682,6 +690,7 @@ impl AppState {
             text_annotation_scale: DEFAULT_TEXT_ANNOTATION_SCALE,
             tool_override: None,
             color_picker_copied: false,
+            help_visible: false,
             keyboard_text: None,
             repeat_key: None,
             repeat_deadline: None,
@@ -918,14 +927,12 @@ mod tests {
             ANNOTATION_COLOR_PALETTE[0].value,
             4,
             None,
+            None,
         );
 
         assert_eq!(badge.subtitle, "View controls and quick entry points");
         assert_eq!(badge.lines[0].text, "D draw  W draw no zoom");
-        assert_eq!(
-            badge.lines[2].text,
-            "S save  I pick  Ctrl+C  F/[ ]  Esc close"
-        );
+        assert_eq!(badge.lines[2].text, "S save  Ctrl+C  ? help  Esc close");
     }
 
     #[test]
@@ -935,12 +942,10 @@ mod tests {
             ANNOTATION_COLOR_PALETTE[0].value,
             4,
             Some(CloseKey::Q),
+            None,
         );
 
-        assert_eq!(
-            badge.lines[2].text,
-            "S save  I pick  Ctrl+C  F/[ ]  Q close"
-        );
+        assert_eq!(badge.lines[2].text, "S save  Ctrl+C  ? help  Q close");
     }
 
     #[test]
@@ -949,6 +954,7 @@ mod tests {
             AnnotationTool::Pen,
             ANNOTATION_COLOR_PALETTE[0].value,
             4,
+            None,
             None,
         );
 

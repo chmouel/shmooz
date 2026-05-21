@@ -1,5 +1,6 @@
 use bytemuck::cast_slice_mut;
 
+use crate::config::CloseKey;
 use crate::state::{
     ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, BadgeModel,
     ShapeAnnotation, StrokeAnnotation, TextAnnotation,
@@ -184,55 +185,93 @@ pub fn draw_annotation_overlay(
     }
 }
 
+fn paint_rounded_card_background(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    top_accent_color: Option<u32>,
+) {
+    let pixels = pixels_u32(pixels);
+    let r = 12.0f32; // Corner radius
+    let bg_color = 0xEB13_1316; // Deep obsidian-glass background
+    let border_color = 0x2CFF_FFFF; // Elegant semi-transparent white border
+
+    for y in 0..height {
+        let row_offset = y * width;
+        for x in 0..width {
+            let cx = (x as f32).clamp(r, width as f32 - 1.0 - r);
+            let cy = (y as f32).clamp(r, height as f32 - 1.0 - r);
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+
+            if d <= r + 0.5 {
+                let alpha_scale = (r + 0.5 - d).clamp(0.0, 1.0);
+                let border_alpha = (1.0 - (d - (r - 0.5)).abs()).clamp(0.0, 1.0);
+
+                let pixel_bg = bg_color;
+                let mut blended_color = if border_alpha > 0.0 {
+                    let b_alpha = ((border_color >> 24) & 0xFF) as f32 * border_alpha;
+                    let b_color = (border_color & 0x00FF_FFFF) | (((b_alpha as u32) & 0xFF) << 24);
+                    alpha_over(pixel_bg, b_color)
+                } else {
+                    pixel_bg
+                };
+
+                if let Some(accent) = top_accent_color.filter(|_| y < 3) {
+                    blended_color = alpha_over(blended_color, accent);
+                }
+
+                let final_a = (((blended_color >> 24) & 0xFF) as f32 * alpha_scale) as u32;
+                let final_pixel = (blended_color & 0x00FF_FFFF) | (final_a << 24);
+
+                pixels[row_offset + x] = final_pixel;
+            } else {
+                pixels[row_offset + x] = 0;
+            }
+        }
+    }
+}
+
 fn paint_badge_background(pixels: &mut [u8], width: usize, height: usize) {
-    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
-    fill_rect(pixels, width, height, 0, 0, width, 3, 0xFFFF_C83D);
-    fill_rect(
-        pixels,
-        width,
-        height,
-        0,
-        height.saturating_sub(3),
-        width,
-        3,
-        0xFFFF_C83D,
-    );
-    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    paint_rounded_card_background(pixels, width, height, Some(0xFFFF_C83D));
 }
 
 pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &BadgeModel) {
     pixels_u32(pixels).fill(0);
 
     paint_badge_background(pixels, width, height);
-    fill_rect(
-        pixels,
+
+    let px_u32 = pixels_u32(pixels);
+    blend_rect(
+        px_u32,
         width,
         height,
         18,
         52,
-        width.saturating_sub(36),
-        1,
-        0x5030_3030,
+        width.saturating_sub(18) as i32,
+        53,
+        0x1AFF_FFFF, // Subtle elegant divider line
     );
-    fill_rect(
-        pixels,
+    blend_rect(
+        px_u32,
         width,
         height,
         18,
         80,
-        width.saturating_sub(36),
-        1,
-        0x4430_3030,
+        width.saturating_sub(18) as i32,
+        81,
+        0x1AFF_FFFF,
     );
-    fill_rect(
-        pixels,
+    blend_rect(
+        px_u32,
         width,
         height,
         18,
         104,
-        width.saturating_sub(36),
-        1,
-        0x4430_3030,
+        width.saturating_sub(18) as i32,
+        105,
+        0x1AFF_FFFF,
     );
 
     draw_label(
@@ -253,7 +292,7 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
         34,
         &badge.subtitle,
         BADGE_SUBTITLE_SCALE,
-        0xFFE7_BD73,
+        0xFF9C_A3AF,
     );
 
     let row_y = [60, 84, 108];
@@ -286,15 +325,17 @@ pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, 
     pixels_u32(pixels).fill(0);
 
     paint_badge_background(pixels, width, height);
-    fill_rect(
-        pixels,
+
+    let px_u32 = pixels_u32(pixels);
+    blend_rect(
+        px_u32,
         width,
         height,
         18,
         54,
-        width.saturating_sub(36),
-        1,
-        0x5030_3030,
+        width.saturating_sub(18) as i32,
+        55,
+        0x1AFF_FFFF,
     );
 
     draw_label(
@@ -315,7 +356,7 @@ pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, 
         40,
         "NOTIFICATION",
         TOAST_TEXT_SCALE,
-        0xFFE7_BD73,
+        0xFF9C_A3AF,
     );
     draw_label(
         pixels,
@@ -340,13 +381,14 @@ pub fn paint_color_picker(
     pixels_u32(pixels).fill(0);
 
     let color = 0xFF00_0000 | (color & 0x00FF_FFFF);
-    fill_rect(pixels, width, height, 0, 0, width, height, 0xE014_1414);
-    fill_rect(pixels, width, height, 0, 0, width, 3, color);
-    fill_rect(pixels, width, height, 0, 0, 5, height, 0xAA4A_2812);
+    paint_rounded_card_background(pixels, width, height, Some(color));
+
+    // Draw the color swatch. We can make the swatch itself slightly rounded,
+    // but since fill_rect is simple, a small border-box is fine or we can keep the clean swatch.
     fill_rect(pixels, width, height, 18, 32, 86, 62, 0xFFFF_FFFF);
     fill_rect(pixels, width, height, 21, 35, 80, 56, color);
 
-    draw_label(pixels, width, height, 122, 26, "COLOR", 2, 0xFFE7_BD73);
+    draw_label(pixels, width, height, 122, 26, "COLOR", 2, 0xFF9C_A3AF);
     draw_label(pixels, width, height, 122, 50, hex, 3, 0xFFFF_FFFF);
     if copied {
         draw_label(pixels, width, height, 122, 82, "COPIED", 1, 0xFFFF_C83D);
@@ -937,6 +979,441 @@ fn draw_bitmap_glyph(
     x + (6 * scale) as i32
 }
 
+const HELP_TITLE_SCALE: usize = 3;
+const HELP_HEADING_SCALE: usize = 2;
+const HELP_TEXT_SCALE: usize = 2;
+const HELP_KEY_COLOR: u32 = 0xFFFF_C83D;
+const HELP_TEXT_COLOR: u32 = 0xFFE0_E0E0;
+const HELP_HEADING_COLOR: u32 = 0xFFFF_FFFF;
+const HELP_DIM_COLOR: u32 = 0xFF7A_7A7A;
+const HELP_CHAR_W: usize = 6;
+
+fn paint_rounded_card_at(
+    pixels: &mut [u32],
+    buf_width: usize,
+    card_x: usize,
+    card_y: usize,
+    card_width: usize,
+    card_height: usize,
+) {
+    let r = 12.0f32;
+    let bg_color = 0xEB13_1316;
+    let border_color = 0x2CFF_FFFF;
+
+    for y in 0..card_height {
+        let buf_y = card_y + y;
+        let row_offset = buf_y * buf_width;
+        for x in 0..card_width {
+            let cx = (x as f32).clamp(r, card_width as f32 - 1.0 - r);
+            let cy = (y as f32).clamp(r, card_height as f32 - 1.0 - r);
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+
+            let buf_x = card_x + x;
+            if d <= r + 0.5 {
+                let alpha_scale = (r + 0.5 - d).clamp(0.0, 1.0);
+                let border_alpha = (1.0 - (d - (r - 0.5)).abs()).clamp(0.0, 1.0);
+
+                let mut blended_color = if border_alpha > 0.0 {
+                    let b_alpha = ((border_color >> 24) & 0xFF) as f32 * border_alpha;
+                    let b_color = (border_color & 0x00FF_FFFF) | (((b_alpha as u32) & 0xFF) << 24);
+                    alpha_over(bg_color, b_color)
+                } else {
+                    bg_color
+                };
+
+                let final_a = (((blended_color >> 24) & 0xFF) as f32 * alpha_scale) as u32;
+                blended_color = (blended_color & 0x00FF_FFFF) | (final_a << 24);
+                pixels[row_offset + buf_x] = alpha_over(pixels[row_offset + buf_x], blended_color);
+            }
+        }
+    }
+}
+
+struct HelpEntry {
+    key: &'static str,
+    desc: &'static str,
+}
+
+fn help_section_height(entries: &[HelpEntry], scale: usize) -> usize {
+    let heading_h = TEXT_GLYPH_HEIGHT * HELP_HEADING_SCALE;
+    let row_h = TEXT_GLYPH_HEIGHT * scale;
+    let gap = scale * 3;
+    heading_h + gap * 2 + entries.len() * (row_h + gap)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_help_section(
+    pixels: &mut [u32],
+    width: usize,
+    height: usize,
+    x: usize,
+    y: usize,
+    heading: &str,
+    entries: &[HelpEntry],
+    scale: usize,
+    key_col_w: usize,
+) {
+    draw_label_pixels(
+        pixels,
+        width,
+        height,
+        x as i32,
+        y as i32,
+        heading,
+        HELP_HEADING_SCALE,
+        HELP_HEADING_COLOR,
+    );
+
+    let heading_h = TEXT_GLYPH_HEIGHT * HELP_HEADING_SCALE;
+    let row_h = TEXT_GLYPH_HEIGHT * scale;
+    let gap = scale * 3;
+    let mut row_y = y + heading_h + gap * 2;
+
+    for entry in entries {
+        draw_label_pixels(
+            pixels,
+            width,
+            height,
+            x as i32,
+            row_y as i32,
+            entry.key,
+            scale,
+            HELP_KEY_COLOR,
+        );
+        draw_label_pixels(
+            pixels,
+            width,
+            height,
+            (x + key_col_w) as i32,
+            row_y as i32,
+            entry.desc,
+            scale,
+            HELP_TEXT_COLOR,
+        );
+        row_y += row_h + gap;
+    }
+}
+
+pub fn paint_help_overlay(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    close_key: Option<CloseKey>,
+) {
+    let pixels = pixels_u32(pixels);
+    pixels.fill(0xCC10_1018);
+
+    let nav_entries: &[HelpEntry] = &[
+        HelpEntry {
+            key: "Scroll",
+            desc: "Zoom at pointer",
+        },
+        HelpEntry {
+            key: "Shift+Drag",
+            desc: "Box zoom area",
+        },
+        HelpEntry {
+            key: "Drag",
+            desc: "Pan",
+        },
+        HelpEntry {
+            key: "+/-",
+            desc: "Zoom center",
+        },
+        HelpEntry {
+            key: "Arrows",
+            desc: "Pan",
+        },
+        HelpEntry {
+            key: "0",
+            desc: "Reset view",
+        },
+        HelpEntry {
+            key: "f",
+            desc: "Spotlight",
+        },
+        HelpEntry {
+            key: "[ ]",
+            desc: "Spotlight size",
+        },
+        HelpEntry {
+            key: "Dbl click",
+            desc: "Reset view",
+        },
+        HelpEntry {
+            key: "Right click",
+            desc: "Exit",
+        },
+    ];
+
+    let picker_entries: &[HelpEntry] = &[
+        HelpEntry {
+            key: "i",
+            desc: "Toggle picker",
+        },
+        HelpEntry {
+            key: "Move",
+            desc: "Update swatch",
+        },
+        HelpEntry {
+            key: "Left click",
+            desc: "Copy hex",
+        },
+        HelpEntry {
+            key: "Esc",
+            desc: "Leave picker",
+        },
+    ];
+
+    let annot_entries: &[HelpEntry] = &[
+        HelpEntry {
+            key: "d",
+            desc: "Draw zoomed",
+        },
+        HelpEntry {
+            key: "w",
+            desc: "Draw full view",
+        },
+        HelpEntry {
+            key: "p/h/l/r/e",
+            desc: "Tools",
+        },
+        HelpEntry {
+            key: "t",
+            desc: "Text mode",
+        },
+        HelpEntry {
+            key: "m",
+            desc: "Move mode",
+        },
+        HelpEntry {
+            key: "Drag",
+            desc: "Draw or move",
+        },
+        HelpEntry {
+            key: "Click",
+            desc: "Place text",
+        },
+        HelpEntry {
+            key: "1-0 - =",
+            desc: "Select color",
+        },
+        HelpEntry {
+            key: "[ ]",
+            desc: "Text size",
+        },
+        HelpEntry {
+            key: "Enter",
+            desc: "Commit text",
+        },
+        HelpEntry {
+            key: "Backspace",
+            desc: "Delete char",
+        },
+        HelpEntry {
+            key: "u",
+            desc: "Undo",
+        },
+        HelpEntry {
+            key: "c",
+            desc: "Clear",
+        },
+        HelpEntry {
+            key: "Esc",
+            desc: "Back",
+        },
+    ];
+
+    let global_entries: &[HelpEntry] = &[
+        HelpEntry {
+            key: "s",
+            desc: "Save screenshot",
+        },
+        HelpEntry {
+            key: "Ctrl+C",
+            desc: "Copy to clipboard",
+        },
+        HelpEntry {
+            key: "?",
+            desc: "This help",
+        },
+    ];
+
+    let scale = HELP_TEXT_SCALE;
+    let key_col_w = 14 * HELP_CHAR_W * scale;
+    let desc_col_w = 18 * HELP_CHAR_W * scale;
+    let section_w = key_col_w + desc_col_w;
+    let col_gap = 4 * HELP_CHAR_W * scale;
+
+    let nav_h = help_section_height(nav_entries, scale);
+    let picker_h = help_section_height(picker_entries, scale);
+    let annot_h = help_section_height(annot_entries, scale);
+    let global_h = help_section_height(global_entries, scale);
+
+    let title_h = TEXT_GLYPH_HEIGHT * HELP_TITLE_SCALE;
+    let pad = 36;
+    let footer_h = TEXT_GLYPH_HEIGHT * HELP_TEXT_SCALE + pad;
+
+    let use_three_cols = width >= (section_w * 3 + col_gap * 2 + pad * 2 + 80);
+
+    let (card_w, card_h) = if use_three_cols {
+        let cw = section_w * 3 + col_gap * 2 + pad * 2;
+        let left_col_h = nav_h + pad + global_h;
+        let body_h = left_col_h.max(picker_h).max(annot_h);
+        let ch = title_h + pad * 3 + body_h + footer_h;
+        (cw, ch)
+    } else {
+        let cw = section_w * 2 + col_gap + pad * 2;
+        let left_h = nav_h + pad + picker_h;
+        let right_h = annot_h + pad + global_h;
+        let body_h = left_h.max(right_h);
+        let ch = title_h + pad * 3 + body_h + footer_h;
+        (cw, ch)
+    };
+
+    let card_w = card_w.min(width.saturating_sub(40));
+    let card_h = card_h.min(height.saturating_sub(40));
+    let card_x = (width.saturating_sub(card_w)) / 2;
+    let card_y = (height.saturating_sub(card_h)) / 2;
+
+    paint_rounded_card_at(pixels, width, card_x, card_y, card_w, card_h);
+
+    let content_x = card_x + pad;
+    let mut y = card_y + pad;
+
+    draw_label_pixels(
+        pixels,
+        width,
+        height,
+        content_x as i32,
+        y as i32,
+        "KEYBOARD SHORTCUTS",
+        HELP_TITLE_SCALE,
+        HELP_HEADING_COLOR,
+    );
+    y += title_h + pad * 2;
+
+    if use_three_cols {
+        let col1_x = content_x;
+        let col2_x = content_x + section_w + col_gap;
+        let col3_x = content_x + (section_w + col_gap) * 2;
+
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col1_x,
+            y,
+            "NAVIGATION",
+            nav_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col1_x,
+            y + nav_h + pad,
+            "GLOBAL",
+            global_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col2_x,
+            y,
+            "COLOR PICKER",
+            picker_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col3_x,
+            y,
+            "ANNOTATION",
+            annot_entries,
+            scale,
+            key_col_w,
+        );
+    } else {
+        let col1_x = content_x;
+        let col2_x = content_x + section_w + col_gap;
+
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col1_x,
+            y,
+            "NAVIGATION",
+            nav_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col1_x,
+            y + nav_h + pad,
+            "COLOR PICKER",
+            picker_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col2_x,
+            y,
+            "ANNOTATION",
+            annot_entries,
+            scale,
+            key_col_w,
+        );
+        draw_help_section(
+            pixels,
+            width,
+            height,
+            col2_x,
+            y + annot_h + pad,
+            "GLOBAL",
+            global_entries,
+            scale,
+            key_col_w,
+        );
+    }
+
+    let close_label = match close_key {
+        Some(k) => k.label(),
+        None => "Esc",
+    };
+    let footer_text = format!("Press ? or {} to close", close_label);
+    let footer_w = footer_text.len() * HELP_CHAR_W * HELP_TEXT_SCALE;
+    let footer_x = card_x + (card_w.saturating_sub(footer_w)) / 2;
+    let footer_y = card_y + card_h - footer_h;
+    draw_label_pixels(
+        pixels,
+        width,
+        height,
+        footer_x as i32,
+        footer_y as i32,
+        &footer_text,
+        HELP_TEXT_SCALE,
+        HELP_DIM_COLOR,
+    );
+}
+
 fn lookup_glyph(ch: char) -> Option<&'static [u8; TEXT_GLYPH_HEIGHT]> {
     match ch {
         'A' => Some(&[0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
@@ -1143,11 +1620,11 @@ mod tests {
 
     #[test]
     fn zoom_badge_renders_title_and_hints() {
-        let mut pixels = vec![0_u8; 480 * 136 * 4];
+        let mut pixels = vec![0_u8; 640 * 136 * 4];
 
         paint_zoom_badge(
             &mut pixels,
-            480,
+            640,
             136,
             &BadgeModel {
                 title: "DRAW".to_owned(),

@@ -528,6 +528,22 @@ fn handle_key_event(state: &mut AppState, key: u32, key_state: wl_keyboard::KeyS
         return;
     }
 
+    if key == KEY_SLASH && shift_modifier_active(state) {
+        state.help_visible = !state.help_visible;
+        overlay::update_help_overlays(state);
+        return;
+    }
+
+    if key == KEY_ESC && state.help_visible {
+        state.help_visible = false;
+        overlay::update_help_overlays(state);
+        return;
+    }
+
+    if state.help_visible {
+        return;
+    }
+
     if handle_active_text_input(state, key) {
         return;
     }
@@ -1206,6 +1222,7 @@ fn adjust_spotlight_radius(state: &mut AppState, delta: f64) {
     state.spotlight_radius_frac = (state.spotlight_radius_frac + delta).clamp(0.05, 0.90);
     if (state.spotlight_radius_frac - previous).abs() > f64::EPSILON {
         overlay::refresh_visible_spotlight_overlays(state);
+        overlay::refresh_zoom_badge_overlays(state);
     }
 }
 
