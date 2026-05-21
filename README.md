@@ -22,6 +22,11 @@ https://github.com/user-attachments/assets/7f517044-b52f-477b-8721-d22397a73a75
 
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/85aa0fb4-c19b-421c-865e-e944c296e92d" />
 
+* Pres ? for help
+
+<img width="3825" height="2141" alt="image" src="https://github.com/user-attachments/assets/c7a1b99f-9476-420b-8fef-ffdf2b08cdc4" />
+
+
 ## Features
 
 * Zoom and pan the current output.
