@@ -10,17 +10,17 @@ Zoom, annotate, and capture the current Wayland view.
 
 https://github.com/user-attachments/assets/7f517044-b52f-477b-8721-d22397a73a75
 
-* Zoom
+* Annotation
 
-<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/a1a96fac-578f-4baf-bdee-f01ee9299244" />
+<img width="3836" height="2160" alt="image" src="https://github.com/user-attachments/assets/b72c0bc1-d338-42ac-a22d-d42e3ad7e3fd" />
 
 * Spotlight
 
 <img width="3831" height="2160" alt="image" src="https://github.com/user-attachments/assets/289c925d-b771-4a31-9f84-4bfe24d947cb" />
 
-* Annotation
+* Color Picker
 
-<img width="3322" height="1851" alt="CopyQ qCHygC" src="https://github.com/user-attachments/assets/ee604e72-f1cc-4403-9f1c-350b7d1c8043" />
+<img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/85aa0fb4-c19b-421c-865e-e944c296e92d" />
 
 ## Features
 
