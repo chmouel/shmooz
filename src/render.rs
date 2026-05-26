@@ -13,6 +13,13 @@ const TOAST_TITLE_SCALE: usize = 2;
 const TOAST_TEXT_SCALE: usize = 1;
 pub(crate) const TEXT_GLYPH_HEIGHT: usize = 7;
 
+const SPOTLIGHT_DIM_COLOR: u32 = 0xAA00_0000;
+const SHIFT_SELECT_FILL_COLOR: u32 = 0x253B_82F6;
+const SHIFT_SELECT_BORDER_COLOR: u32 = 0xCC3B_82F6;
+const CARD_BG_COLOR: u32 = 0xEB13_1316;
+const CARD_BORDER_COLOR: u32 = 0x2CFF_FFFF;
+const DIVIDER_COLOR: u32 = 0x1AFF_FFFF;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorStyle {
     Crosshair,
@@ -81,7 +88,7 @@ pub fn draw_spotlight_overlay(
     let radius_sq = radius * radius;
     let center_x = center_x.min(width.saturating_sub(1)) as i32;
     let center_y = center_y.min(height.saturating_sub(1)) as i32;
-    let dim = 0xAA00_0000;
+    let dim = SPOTLIGHT_DIM_COLOR;
 
     for y in 0..height {
         let row = &mut pixels[y * width..(y + 1) * width];
@@ -165,7 +172,7 @@ pub fn draw_annotation_overlay(
             start.y,
             end.x,
             end.y,
-            0x253B_82F6,
+            SHIFT_SELECT_FILL_COLOR,
         );
         draw_rectangle(
             pixels,
@@ -175,7 +182,7 @@ pub fn draw_annotation_overlay(
             start.y,
             end.x,
             end.y,
-            0xCC3B_82F6,
+            SHIFT_SELECT_BORDER_COLOR,
             1,
         );
     }
@@ -192,9 +199,9 @@ fn paint_rounded_card_background(
     top_accent_color: Option<u32>,
 ) {
     let pixels = pixels_u32(pixels);
-    let r = 12.0f32; // Corner radius
-    let bg_color = 0xEB13_1316; // Deep obsidian-glass background
-    let border_color = 0x2CFF_FFFF; // Elegant semi-transparent white border
+    let r = 12.0f32;
+    let bg_color = CARD_BG_COLOR;
+    let border_color = CARD_BORDER_COLOR;
 
     for y in 0..height {
         let row_offset = y * width;
@@ -251,7 +258,7 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
         52,
         width.saturating_sub(18) as i32,
         53,
-        0x1AFF_FFFF, // Subtle elegant divider line
+        DIVIDER_COLOR,
     );
     blend_rect(
         px_u32,
@@ -261,7 +268,7 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
         80,
         width.saturating_sub(18) as i32,
         81,
-        0x1AFF_FFFF,
+        DIVIDER_COLOR,
     );
     blend_rect(
         px_u32,
@@ -271,7 +278,7 @@ pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &
         104,
         width.saturating_sub(18) as i32,
         105,
-        0x1AFF_FFFF,
+        DIVIDER_COLOR,
     );
 
     draw_label(
@@ -335,7 +342,7 @@ pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, 
         54,
         width.saturating_sub(18) as i32,
         55,
-        0x1AFF_FFFF,
+        DIVIDER_COLOR,
     );
 
     draw_label(
@@ -383,8 +390,6 @@ pub fn paint_color_picker(
     let color = 0xFF00_0000 | (color & 0x00FF_FFFF);
     paint_rounded_card_background(pixels, width, height, Some(color));
 
-    // Draw the color swatch. We can make the swatch itself slightly rounded,
-    // but since fill_rect is simple, a small border-box is fine or we can keep the clean swatch.
     fill_rect(pixels, width, height, 18, 32, 86, 62, 0xFFFF_FFFF);
     fill_rect(pixels, width, height, 21, 35, 80, 56, color);
 
@@ -997,8 +1002,8 @@ fn paint_rounded_card_at(
     card_height: usize,
 ) {
     let r = 12.0f32;
-    let bg_color = 0xEB13_1316;
-    let border_color = 0x2CFF_FFFF;
+    let bg_color = CARD_BG_COLOR;
+    let border_color = CARD_BORDER_COLOR;
 
     for y in 0..card_height {
         let buf_y = card_y + y;
@@ -1513,8 +1518,9 @@ mod tests {
     };
 
     use super::{
-        CursorStyle, OverlayCursor, draw_annotation_overlay, draw_spotlight_overlay, fill_rect,
-        lookup_glyph, paint_color_picker, paint_toast, paint_zoom_badge,
+        CursorStyle, OverlayCursor, SPOTLIGHT_DIM_COLOR, draw_annotation_overlay,
+        draw_spotlight_overlay, fill_rect, lookup_glyph, paint_color_picker, paint_toast,
+        paint_zoom_badge,
     };
 
     #[test]
@@ -1539,7 +1545,7 @@ mod tests {
         let edge = &pixels[0..4];
 
         assert_eq!(center, &0x0000_0000_u32.to_ne_bytes());
-        assert_eq!(edge, &0xAA00_0000_u32.to_ne_bytes());
+        assert_eq!(edge, &SPOTLIGHT_DIM_COLOR.to_ne_bytes());
     }
 
     #[test]

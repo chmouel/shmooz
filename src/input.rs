@@ -85,6 +85,7 @@ const SCROLL_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(80);
 const RESET_ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(180);
 const KEY_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const MOVE_HIT_RADIUS: f64 = 12.0;
+const SHIFT_SELECT_MIN_DISTANCE: f64 = 5.0;
 const SCREENSHOT_TOAST_MAX_CHARS: usize = 72;
 const COPY_SCREENSHOT_TOAST: &str = "Screenshot copied to clipboard";
 const CLIPBOARD_UNAVAILABLE_TOAST: &str = "Clipboard copy unavailable";
@@ -448,7 +449,9 @@ fn pointer_button(
                         let dist_x = (window.pointer_x - start_screen.x).abs();
                         let dist_y = (window.pointer_y - start_screen.y).abs();
 
-                        if dist_x >= 5.0 || dist_y >= 5.0 {
+                        if dist_x >= SHIFT_SELECT_MIN_DISTANCE
+                            || dist_y >= SHIFT_SELECT_MIN_DISTANCE
+                        {
                             let x_min = (start_pt.x.min(end_pt.x)) as f64;
                             let x_max = (start_pt.x.max(end_pt.x)) as f64;
                             let y_min = (start_pt.y.min(end_pt.y)) as f64;
@@ -1428,6 +1431,116 @@ fn screen_to_annotation_point(state: &AppState, output_id: u32, x: f64, y: f64) 
     )
 }
 
+fn install_keyboard_keymap(state: &mut AppState, fd: std::os::fd::OwnedFd, size: usize) {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = unsafe {
+        xkb::Keymap::new_from_fd(
+            &context,
+            fd,
+            size,
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+    };
+    let Ok(Some(keymap)) = keymap else {
+        state.keyboard_text = None;
+        return;
+    };
+    let state_machine = xkb::State::new(&keymap);
+    let compose = compose_state_for_locale(&context);
+
+    state.keyboard_text = Some(KeyboardTextState {
+        _context: context,
+        _keymap: keymap,
+        state: state_machine,
+        compose,
+    });
+}
+
+fn update_keyboard_modifiers(
+    state: &mut AppState,
+    mods_depressed: u32,
+    mods_latched: u32,
+    mods_locked: u32,
+    group: u32,
+) {
+    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
+        keyboard_text
+            .state
+            .update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
+    }
+}
+
+fn compose_state_for_locale(context: &xkb::Context) -> Option<xkb::compose::State> {
+    let locale = std::env::var_os("LC_ALL")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("LC_CTYPE").filter(|value| !value.is_empty()))
+        .or_else(|| std::env::var_os("LANG").filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| OsString::from("C.UTF-8"));
+
+    let table =
+        xkb::compose::Table::new_from_locale(context, &locale, xkb::compose::COMPILE_NO_FLAGS)
+            .ok()?;
+    Some(xkb::compose::State::new(
+        &table,
+        xkb::compose::STATE_NO_FLAGS,
+    ))
+}
+
+fn current_text_input(state: &mut AppState, key: u32) -> Option<String> {
+    let keycode = xkb::Keycode::new(key + 8);
+
+    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
+        if let Some(compose) = keyboard_text.compose.as_mut() {
+            let keysym = keyboard_text.state.key_get_one_sym(keycode);
+            let _ = compose.feed(keysym);
+            match compose.status() {
+                xkb::compose::Status::Composing => return None,
+                xkb::compose::Status::Composed => {
+                    let text = compose.utf8();
+                    compose.reset();
+                    return sanitize_text_input(text);
+                }
+                xkb::compose::Status::Cancelled => {
+                    compose.reset();
+                }
+                xkb::compose::Status::Nothing => {}
+            }
+        }
+
+        return sanitize_text_input(Some(keyboard_text.state.key_get_utf8(keycode)));
+    }
+
+    text_input_char(key).map(|ch| ch.to_string())
+}
+
+fn sanitize_text_input(input: Option<String>) -> Option<String> {
+    let input = input?;
+    let filtered = input
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '\u{7f}')
+        .collect::<String>();
+    (!filtered.is_empty()).then_some(filtered)
+}
+
+// NOTE: This is a fallback for when xkbcommon isn't able to provide a UTF-8 string for the key
+// event. This is probably more complicated than it needs to be, but it should cover most common
+// keys on a US layout keyboard.
+fn text_input_char(key: u32) -> Option<char> {
+    match key {
+        16..=25 => Some(b"QWERTYUIOP"[(key - 16) as usize] as char),
+        30..=38 => Some(b"ASDFGHJKL"[(key - 30) as usize] as char),
+        44..=50 => Some(b"ZXCVBNM"[(key - 44) as usize] as char),
+        2..=10 => Some((b'0' + key as u8 - 1) as char),
+        KEY_0 => Some('0'),
+        KEY_SPACE => Some(' '),
+        KEY_MINUS => Some('-'),
+        KEY_DOT => Some('.'),
+        KEY_SLASH => Some('/'),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use wayland_client::protocol::wl_keyboard;
@@ -1668,143 +1781,5 @@ mod tests {
     fn shift_modifier_inactive_by_default() {
         let state = AppState::new(test_config());
         assert!(!super::shift_modifier_active(&state));
-    }
-}
-
-fn install_keyboard_keymap(state: &mut AppState, fd: std::os::fd::OwnedFd, size: usize) {
-    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-    let keymap = unsafe {
-        xkb::Keymap::new_from_fd(
-            &context,
-            fd,
-            size,
-            xkb::KEYMAP_FORMAT_TEXT_V1,
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )
-    };
-    let Ok(Some(keymap)) = keymap else {
-        state.keyboard_text = None;
-        return;
-    };
-    let state_machine = xkb::State::new(&keymap);
-    let compose = compose_state_for_locale(&context);
-
-    state.keyboard_text = Some(KeyboardTextState {
-        _context: context,
-        _keymap: keymap,
-        state: state_machine,
-        compose,
-    });
-}
-
-fn update_keyboard_modifiers(
-    state: &mut AppState,
-    mods_depressed: u32,
-    mods_latched: u32,
-    mods_locked: u32,
-    group: u32,
-) {
-    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
-        keyboard_text
-            .state
-            .update_mask(mods_depressed, mods_latched, mods_locked, 0, 0, group);
-    }
-}
-
-fn compose_state_for_locale(context: &xkb::Context) -> Option<xkb::compose::State> {
-    let locale = std::env::var_os("LC_ALL")
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("LC_CTYPE").filter(|value| !value.is_empty()))
-        .or_else(|| std::env::var_os("LANG").filter(|value| !value.is_empty()))
-        .unwrap_or_else(|| OsString::from("C.UTF-8"));
-
-    let table =
-        xkb::compose::Table::new_from_locale(context, &locale, xkb::compose::COMPILE_NO_FLAGS)
-            .ok()?;
-    Some(xkb::compose::State::new(
-        &table,
-        xkb::compose::STATE_NO_FLAGS,
-    ))
-}
-
-fn current_text_input(state: &mut AppState, key: u32) -> Option<String> {
-    let keycode = xkb::Keycode::new(key + 8);
-
-    if let Some(keyboard_text) = state.keyboard_text.as_mut() {
-        if let Some(compose) = keyboard_text.compose.as_mut() {
-            let keysym = keyboard_text.state.key_get_one_sym(keycode);
-            let _ = compose.feed(keysym);
-            match compose.status() {
-                xkb::compose::Status::Composing => return None,
-                xkb::compose::Status::Composed => {
-                    let text = compose.utf8();
-                    compose.reset();
-                    return sanitize_text_input(text);
-                }
-                xkb::compose::Status::Cancelled => {
-                    compose.reset();
-                }
-                xkb::compose::Status::Nothing => {}
-            }
-        }
-
-        return sanitize_text_input(Some(keyboard_text.state.key_get_utf8(keycode)));
-    }
-
-    text_input_char(key).map(|ch| ch.to_string())
-}
-
-fn sanitize_text_input(input: Option<String>) -> Option<String> {
-    let input = input?;
-    let filtered = input
-        .chars()
-        .filter(|ch| !ch.is_control() && *ch != '\u{7f}')
-        .collect::<String>();
-    (!filtered.is_empty()).then_some(filtered)
-}
-
-fn text_input_char(key: u32) -> Option<char> {
-    match key {
-        KEY_A => Some('A'),
-        KEY_B => Some('B'),
-        KEY_C => Some('C'),
-        KEY_D => Some('D'),
-        KEY_E => Some('E'),
-        KEY_F => Some('F'),
-        KEY_G => Some('G'),
-        KEY_H => Some('H'),
-        KEY_I => Some('I'),
-        KEY_J => Some('J'),
-        KEY_K => Some('K'),
-        KEY_L => Some('L'),
-        KEY_M => Some('M'),
-        KEY_N => Some('N'),
-        KEY_O => Some('O'),
-        KEY_P => Some('P'),
-        KEY_Q => Some('Q'),
-        KEY_R => Some('R'),
-        KEY_S => Some('S'),
-        KEY_T => Some('T'),
-        KEY_U => Some('U'),
-        KEY_V => Some('V'),
-        KEY_W => Some('W'),
-        KEY_X => Some('X'),
-        KEY_Y => Some('Y'),
-        KEY_Z => Some('Z'),
-        KEY_0 => Some('0'),
-        KEY_1 => Some('1'),
-        KEY_2 => Some('2'),
-        KEY_3 => Some('3'),
-        KEY_4 => Some('4'),
-        KEY_5 => Some('5'),
-        KEY_6 => Some('6'),
-        KEY_7 => Some('7'),
-        KEY_8 => Some('8'),
-        KEY_9 => Some('9'),
-        KEY_SPACE => Some(' '),
-        KEY_MINUS => Some('-'),
-        KEY_DOT => Some('.'),
-        KEY_SLASH => Some('/'),
-        _ => None,
     }
 }
