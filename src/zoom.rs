@@ -20,6 +20,15 @@ pub struct Point {
     pub y: f64,
 }
 
+impl Size {
+    pub fn from_dims((width, height): (i32, i32)) -> Self {
+        Self {
+            width: f64::from(width),
+            height: f64::from(height),
+        }
+    }
+}
+
 impl ViewRect {
     pub fn full(buffer_size: Size) -> Self {
         Self {
@@ -29,10 +38,6 @@ impl ViewRect {
             height: buffer_size.height,
         }
     }
-}
-
-pub fn restore_view(view: &mut ViewRect, initial: ViewRect) {
-    *view = initial;
 }
 
 pub fn zoom_towards_factor(
@@ -101,6 +106,23 @@ pub fn clamp_view(view: &mut ViewRect, buffer_size: Size, ratio: f64) {
     view.y = view.y.clamp(0.0, buffer_size.height - view.height);
 }
 
+/// View centered on the rect spanned by `a` and `b`, grown to `ratio` and
+/// clamped to the buffer.
+pub fn fit_view_to_rect(a: Point, b: Point, ratio: f64, buffer_size: Size) -> ViewRect {
+    let rect_width = (a.x - b.x).abs();
+    let rect_height = (a.y - b.y).abs();
+    let width = rect_width.max(rect_height * ratio);
+    let height = rect_height.max(rect_width / ratio);
+    let mut view = ViewRect {
+        x: (a.x + b.x) / 2.0 - width / 2.0,
+        y: (a.y + b.y) / 2.0 - height / 2.0,
+        width,
+        height,
+    };
+    clamp_view(&mut view, buffer_size, ratio);
+    view
+}
+
 pub fn interpolate_view(start: ViewRect, target: ViewRect, progress: f64) -> ViewRect {
     let progress = progress.clamp(0.0, 1.0);
     ViewRect {
@@ -122,6 +144,32 @@ pub fn view_rect_nearly_equal(a: ViewRect, b: ViewRect) -> bool {
         && (a.y - b.y).abs() <= EPSILON
         && (a.width - b.width).abs() <= EPSILON
         && (a.height - b.height).abs() <= EPSILON
+}
+
+pub fn source_to_screen(point: Point, view: ViewRect, screen: Size) -> Point {
+    if view.width <= 0.0 || view.height <= 0.0 || screen.width <= 0.0 || screen.height <= 0.0 {
+        return point;
+    }
+
+    Point {
+        x: (point.x - view.x) / view.width * screen.width,
+        y: (point.y - view.y) / view.height * screen.height,
+    }
+}
+
+pub fn screen_to_source(point: Point, view: ViewRect, screen: Size) -> Point {
+    let normalize = |value: f64, size: f64| {
+        if size > 0.0 {
+            (value / size).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+
+    Point {
+        x: view.x + normalize(point.x, screen.width) * view.width,
+        y: view.y + normalize(point.y, screen.height) * view.height,
+    }
 }
 
 pub fn screen_center(size: Size) -> Point {
@@ -174,8 +222,8 @@ fn lerp(start: f64, target: f64, progress: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        MIN_VIEW_HEIGHT, Point, Size, ViewRect, apply_zoom, ease_out_cubic, interpolate_view,
-        restore_view, screen_center, zoom_towards_factor,
+        MIN_VIEW_HEIGHT, Point, Size, ViewRect, apply_zoom, ease_out_cubic, fit_view_to_rect,
+        interpolate_view, screen_center, zoom_towards_factor,
     };
 
     fn buffer() -> Size {
@@ -183,6 +231,30 @@ mod tests {
             width: 1920.0,
             height: 1080.0,
         }
+    }
+
+    #[test]
+    fn fit_view_to_rect_keeps_center_and_ratio_within_buffer() {
+        let ratio = 16.0 / 9.0;
+        let view = fit_view_to_rect(
+            Point { x: 700.0, y: 400.0 },
+            Point { x: 500.0, y: 300.0 },
+            ratio,
+            buffer(),
+        );
+
+        assert_eq!(view.x + view.width / 2.0, 600.0);
+        assert_eq!(view.y + view.height / 2.0, 350.0);
+        assert!((view.width / view.height - ratio).abs() < 1e-9);
+        assert!(view.width >= 200.0 && view.height >= 100.0);
+
+        let corner = fit_view_to_rect(
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 300.0, y: 50.0 },
+            ratio,
+            buffer(),
+        );
+        assert_eq!((corner.x, corner.y), (0.0, 0.0));
     }
 
     #[test]
@@ -214,21 +286,6 @@ mod tests {
         assert_eq!(view.height, buffer_size.height);
         assert_eq!(view.x, 0.0);
         assert_eq!(view.y, 0.0);
-    }
-
-    #[test]
-    fn restore_resets_exactly_to_initial_rectangle() {
-        let initial = ViewRect::full(buffer());
-        let mut current = initial;
-
-        current.x = 50.0;
-        current.y = 40.0;
-        current.width = 1200.0;
-        current.height = 675.0;
-
-        restore_view(&mut current, initial);
-
-        assert_eq!(current, initial);
     }
 
     #[test]

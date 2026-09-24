@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use crate::{cli::Cli, error::ConfigError};
 
-pub const APP_ID: &str = "com.chmouel.shmooz";
 pub const DEFAULT_SCREENSHOT_DIR: &str = "~/Desktop/Screenshots";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,8 +13,6 @@ pub enum CloseKey {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    #[allow(dead_code)]
-    pub app_id: &'static str,
     pub close_key: Option<CloseKey>,
     pub initial_zoom: f64,
     pub output_filter: Option<String>,
@@ -46,7 +43,6 @@ impl TryFrom<Cli> for Config {
         )?;
 
         Ok(Self {
-            app_id: APP_ID,
             close_key,
             initial_zoom,
             output_filter: cli.output,
@@ -84,6 +80,23 @@ impl CloseKey {
             Self::Q => "Q",
             Self::X => "X",
         }
+    }
+}
+
+pub fn close_key_label(close_key: Option<CloseKey>) -> &'static str {
+    close_key.map_or("Esc", CloseKey::label)
+}
+
+#[cfg(test)]
+pub fn test_config() -> Config {
+    Config {
+        close_key: None,
+        initial_zoom: 0.0,
+        output_filter: None,
+        invert_scroll: false,
+        spotlight: false,
+        screenshot_dir: "shots".into(),
+        show_indicator: true,
     }
 }
 

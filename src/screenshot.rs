@@ -13,7 +13,8 @@ use crate::{
     error::{AppError, Result},
     overlay, render,
     state::AppState,
-    zoom::ViewRect,
+    window::WindowState,
+    zoom::{Point, Size, ViewRect, screen_to_source},
 };
 
 struct SourceFrame<'a> {
@@ -80,6 +81,31 @@ pub fn output_color_at_pointer(state: &AppState, output_id: u32) -> Result<Strin
 }
 
 pub fn output_color_value_at_pointer(state: &AppState, output_id: u32) -> Result<u32> {
+    let capture = capture(state, output_id)?;
+    let window = capture.window;
+    let point = screen_to_source(
+        Point {
+            x: window.pointer_x,
+            y: window.pointer_y,
+        },
+        window.view_source,
+        Size {
+            width: capture.logical_width as f64,
+            height: capture.logical_height as f64,
+        },
+    );
+
+    Ok(sample_bilinear(&capture.source, point.x, point.y))
+}
+
+struct Capture<'a> {
+    window: &'a WindowState,
+    source: SourceFrame<'a>,
+    logical_width: usize,
+    logical_height: usize,
+}
+
+fn capture(state: &AppState, output_id: u32) -> Result<Capture<'_>> {
     let output = state
         .outputs
         .get(&output_id)
@@ -88,12 +114,12 @@ pub fn output_color_value_at_pointer(state: &AppState, output_id: u32) -> Result
         .windows
         .get(&output_id)
         .ok_or_else(|| AppError::runtime(format!("window {output_id} is not available")))?;
-    let source = output
+    let buffer = output
         .buffer
         .as_ref()
         .ok_or_else(|| AppError::runtime(format!("output {output_id} has no captured buffer")))?;
-    let source_format = SourcePixelFormat::from_wl_shm(source.format)?;
-    if source.width <= 0 || source.height <= 0 {
+    let format = SourcePixelFormat::from_wl_shm(buffer.format)?;
+    if buffer.width <= 0 || buffer.height <= 0 {
         return Err(AppError::runtime(format!(
             "output {output_id} has invalid captured dimensions"
         )));
@@ -105,65 +131,36 @@ pub fn output_color_value_at_pointer(state: &AppState, output_id: u32) -> Result
         )));
     }
 
-    let normalized_x = (window.pointer_x / f64::from(logical_width)).clamp(0.0, 1.0);
-    let normalized_y = (window.pointer_y / f64::from(logical_height)).clamp(0.0, 1.0);
-    let source_x = window.view_source.x + normalized_x * window.view_source.width;
-    let source_y = window.view_source.y + normalized_y * window.view_source.height;
-
-    Ok(sample_bilinear(
-        &SourceFrame {
-            pixels: cast_slice::<u8, u32>(source.data.as_ref()),
-            width: source.width as usize,
-            height: source.height as usize,
-            stride: (source.stride / 4) as usize,
-            format: source_format,
+    Ok(Capture {
+        window,
+        source: SourceFrame {
+            pixels: cast_slice::<u8, u32>(buffer.data.as_ref()),
+            width: buffer.width as usize,
+            height: buffer.height as usize,
+            stride: (buffer.stride / 4) as usize,
+            format,
         },
-        source_x,
-        source_y,
-    ))
+        logical_width: logical_width as usize,
+        logical_height: logical_height as usize,
+    })
 }
 
 fn render_output(state: &AppState, output_id: u32) -> Result<RenderedScreenshot> {
-    let output = state
-        .outputs
-        .get(&output_id)
-        .ok_or_else(|| AppError::runtime(format!("output {output_id} is not available")))?;
-    let window = state
-        .windows
-        .get(&output_id)
-        .ok_or_else(|| AppError::runtime(format!("window {output_id} is not available")))?;
-    let source = output
-        .buffer
-        .as_ref()
-        .ok_or_else(|| AppError::runtime(format!("output {output_id} has no captured buffer")))?;
-    let source_format = SourcePixelFormat::from_wl_shm(source.format)?;
-
-    let (logical_width, logical_height) = output.logical_size();
-    if logical_width <= 0 || logical_height <= 0 {
-        return Err(AppError::runtime(format!(
-            "output {output_id} has invalid logical dimensions"
-        )));
-    }
-
-    let logical_width = logical_width as usize;
-    let logical_height = logical_height as usize;
-    let source_pixels = cast_slice::<u8, u32>(source.data.as_ref());
+    let Capture {
+        window,
+        source,
+        logical_width,
+        logical_height,
+    } = capture(state, output_id)?;
     let mut frame = vec![0u32; logical_width * logical_height];
 
     render_view(
         &mut frame,
         (logical_width, logical_height),
-        SourceFrame {
-            pixels: source_pixels,
-            width: source.width as usize,
-            height: source.height as usize,
-            stride: (source.stride / 4) as usize,
-            format: source_format,
-        },
+        source,
         window.view_source,
     );
-
-    if window.spotlight_visible {
+    if window.spotlight.as_ref().is_some_and(|layer| layer.visible) {
         let mut spotlight = vec![0u8; logical_width * logical_height * 4];
         let radius = logical_width.min(logical_height) as f64 * state.spotlight_radius_frac;
         render::draw_spotlight_overlay(
@@ -313,13 +310,8 @@ fn blend_full_frame(destination: &mut [u32], overlay: &[u32]) {
 fn write_png(directory: &Path, png: &[u8]) -> Result<PathBuf> {
     fs::create_dir_all(directory).map_err(|err| AppError::screenshot(directory, err))?;
 
-    let (file, path) = create_output_file(directory)?;
-    let mut writer = std::io::BufWriter::new(file);
-    writer
-        .write_all(png)
-        .map_err(|err| AppError::screenshot(&path, err))?;
-    writer
-        .flush()
+    let (mut file, path) = create_output_file(directory)?;
+    file.write_all(png)
         .map_err(|err| AppError::screenshot(&path, err))?;
     Ok(path)
 }
@@ -327,8 +319,7 @@ fn write_png(directory: &Path, png: &[u8]) -> Result<PathBuf> {
 fn encode_png_bytes(pixels: &[u32], width: usize, height: usize) -> Result<Vec<u8>> {
     let png_err = |err| AppError::runtime(format!("failed to encode screenshot as PNG: {err}"));
     let mut encoded = Vec::new();
-    let writer = std::io::BufWriter::new(&mut encoded);
-    let mut encoder = Encoder::new(writer, width as u32, height as u32);
+    let mut encoder = Encoder::new(&mut encoded, width as u32, height as u32);
     encoder.set_color(ColorType::Rgba);
     encoder.set_depth(BitDepth::Eight);
     let mut png_writer = encoder.write_header().map_err(png_err)?;

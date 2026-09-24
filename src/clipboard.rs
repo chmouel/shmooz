@@ -19,7 +19,7 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
 
 use crate::{
     error::{AppError, Result},
-    state::{AppState, ClipboardSelection, PrimarySelection},
+    state::{AppState, Selection},
 };
 
 pub const PNG_MIME_TYPE: &str = "image/png";
@@ -52,28 +52,22 @@ fn set_selection(
     serial: u32,
     data: Vec<u8>,
     wl_copy_mime_type: &str,
-    mime_types: &[&'static str],
+    mime_types: &'static [&'static str],
 ) -> Result<()> {
     clear_clipboard_selection(state);
     clear_primary_selection(state);
 
     let mut regular_selection_set = false;
-    let queue_handle = state.queue_handle.clone();
-    if native_clipboard_available(state) {
-        let queue_handle = queue_handle
-            .as_ref()
+    let mut primary_selection_set = false;
+    if native_clipboard_available(state) || native_primary_selection_available(state) {
+        let queue_handle = state
+            .queue_handle
+            .clone()
             .ok_or_else(|| AppError::runtime("Wayland queue handle is not available"))?;
         regular_selection_set =
-            set_native_clipboard_selection(state, serial, &data, mime_types, queue_handle);
-    }
-
-    let mut primary_selection_set = false;
-    if native_primary_selection_available(state) {
-        let queue_handle = queue_handle
-            .as_ref()
-            .ok_or_else(|| AppError::runtime("Wayland queue handle is not available"))?;
+            set_native_clipboard_selection(state, serial, &data, mime_types, &queue_handle);
         primary_selection_set =
-            set_native_primary_selection(state, serial, &data, mime_types, queue_handle);
+            set_native_primary_selection(state, serial, &data, mime_types, &queue_handle);
     }
 
     let mut wl_copy_error = None;
@@ -111,7 +105,7 @@ fn set_native_clipboard_selection(
     state: &mut AppState,
     serial: u32,
     data: &[u8],
-    mime_types: &[&'static str],
+    mime_types: &'static [&'static str],
     queue_handle: &QueueHandle<AppState>,
 ) -> bool {
     let (Some(manager), Some(data_device)) = (
@@ -126,9 +120,9 @@ fn set_native_clipboard_selection(
         source.offer((*mime_type).to_owned());
     }
     data_device.set_selection(Some(&source), serial);
-    state.clipboard_selection = Some(ClipboardSelection {
+    state.clipboard_selection = Some(Selection {
         source,
-        mime_types: mime_types.to_vec(),
+        mime_types,
         data: data.to_vec(),
     });
     true
@@ -138,7 +132,7 @@ fn set_native_primary_selection(
     state: &mut AppState,
     serial: u32,
     data: &[u8],
-    mime_types: &[&'static str],
+    mime_types: &'static [&'static str],
     queue_handle: &QueueHandle<AppState>,
 ) -> bool {
     let (Some(manager), Some(primary_device)) = (
@@ -153,25 +147,12 @@ fn set_native_primary_selection(
         source.offer((*mime_type).to_owned());
     }
     primary_device.set_selection(Some(&source), serial);
-    state.primary_selection = Some(PrimarySelection {
+    state.primary_selection = Some(Selection {
         source,
-        mime_types: mime_types.to_vec(),
+        mime_types,
         data: data.to_vec(),
     });
     true
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct WlCopyInvocation<'a> {
-    binary: &'static str,
-    args: [&'a str; 2],
-}
-
-fn wl_copy_invocation(mime_type: &str) -> WlCopyInvocation<'_> {
-    WlCopyInvocation {
-        binary: WL_COPY_BINARY,
-        args: ["--type", mime_type],
-    }
 }
 
 fn wl_copy_available() -> bool {
@@ -188,7 +169,6 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 fn copy_with_wl_copy(mime_type: &str, data: &[u8]) -> Result<()> {
-    let invocation = wl_copy_invocation(mime_type);
     let mut input = tempfile::tempfile()
         .map_err(|err| AppError::runtime(format!("failed to create wl-copy input file: {err}")))?;
     input.write_all(data).map_err(|err| {
@@ -198,8 +178,8 @@ fn copy_with_wl_copy(mime_type: &str, data: &[u8]) -> Result<()> {
         .rewind()
         .map_err(|err| AppError::runtime(format!("failed to rewind wl-copy input file: {err}")))?;
 
-    Command::new(invocation.binary)
-        .args(invocation.args)
+    Command::new(WL_COPY_BINARY)
+        .args(["--type", mime_type])
         .stdin(Stdio::from(input))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -231,7 +211,7 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for AppState {
     ) {
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
-                send_selection(state, source, &mime_type, fd);
+                serve_selection(state.clipboard_selection.as_ref(), source, &mime_type, fd);
             }
             wl_data_source::Event::Cancelled
                 if state
@@ -276,7 +256,7 @@ impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> 
     ) {
         match event {
             zwp_primary_selection_source_v1::Event::Send { mime_type, fd } => {
-                send_primary_selection(state, source, &mime_type, fd);
+                serve_selection(state.primary_selection.as_ref(), source, &mime_type, fd);
             }
             zwp_primary_selection_source_v1::Event::Cancelled
                 if state
@@ -312,85 +292,33 @@ impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> 
     }
 }
 
-fn send_selection(
-    state: &mut AppState,
-    source: &wl_data_source::WlDataSource,
+fn serve_selection<S: PartialEq>(
+    selection: Option<&Selection<S>>,
+    source: &S,
     mime_type: &str,
     fd: OwnedFd,
 ) {
-    let Some(selection) = state
-        .clipboard_selection
-        .as_ref()
-        .filter(|selection| selection.source == *source)
-    else {
+    let Some(selection) = selection.filter(|selection| selection.source == *source) else {
         return;
     };
-
     if !selection.mime_types.contains(&mime_type) {
         return;
     }
 
     let data = selection.data.clone();
-    write_selection_data(fd, data, "failed to serve clipboard data");
-}
-
-fn send_primary_selection(
-    state: &mut AppState,
-    source: &zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
-    mime_type: &str,
-    fd: OwnedFd,
-) {
-    let Some(selection) = state
-        .primary_selection
-        .as_ref()
-        .filter(|selection| selection.source == *source)
-    else {
-        return;
-    };
-
-    if !selection.mime_types.contains(&mime_type) {
-        return;
-    }
-
-    let data = selection.data.clone();
-    write_selection_data(fd, data, "failed to serve primary selection data");
-}
-
-fn write_selection_data(fd: OwnedFd, data: Vec<u8>, message: &'static str) {
     std::thread::spawn(move || {
-        let mut file = File::from(fd);
-        if let Err(err) = file.write_all(&data) {
-            tracing::warn!(error = %err, "{message}");
+        if let Err(err) = File::from(fd).write_all(&data) {
+            tracing::warn!(error = %err, "failed to serve selection data");
         }
     });
 }
-
 #[cfg(test)]
 mod tests {
     use std::{env, fs, os::unix::fs::PermissionsExt};
 
     use tempfile::tempdir;
 
-    use super::{
-        PNG_MIME_TYPE, TEXT_WL_COPY_MIME_TYPE, WL_COPY_BINARY, path_has_executable,
-        wl_copy_invocation,
-    };
-
-    #[test]
-    fn wl_copy_invocation_uses_explicit_png_mime_type() {
-        let invocation = wl_copy_invocation(PNG_MIME_TYPE);
-
-        assert_eq!(invocation.binary, WL_COPY_BINARY);
-        assert_eq!(invocation.args, ["--type", "image/png"]);
-    }
-
-    #[test]
-    fn wl_copy_invocation_uses_plain_text_for_text_copy() {
-        let invocation = wl_copy_invocation(TEXT_WL_COPY_MIME_TYPE);
-
-        assert_eq!(invocation.binary, WL_COPY_BINARY);
-        assert_eq!(invocation.args, ["--type", "text/plain"]);
-    }
+    use super::{WL_COPY_BINARY, path_has_executable};
 
     #[test]
     fn path_has_executable_finds_wl_copy_in_later_path_entry() {

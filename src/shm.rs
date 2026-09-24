@@ -15,11 +15,7 @@ pub struct ShmBuffer {
     pub data: MmapMut,
     pub width: i32,
     pub height: i32,
-    #[allow(dead_code)]
     pub stride: i32,
-    #[allow(dead_code)]
-    pub size: usize,
-    #[allow(dead_code)]
     pub format: wl_shm::Format,
 }
 
@@ -78,7 +74,6 @@ impl ShmBuffer {
             width,
             height,
             stride,
-            size,
             format,
         })
     }

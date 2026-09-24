@@ -14,8 +14,8 @@ use crate::{
     config::Config,
     error::{AppError, Result},
     input,
-    state::AppState,
-    wayland::{StartupSummary, WaylandContext},
+    state::{AppState, REPEAT_INTERVAL},
+    wayland::WaylandContext,
     window,
 };
 
@@ -33,8 +33,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::try_from(cli)?;
     let mut context = WaylandContext::connect(config)?;
-    let summary = context.summary()?;
-    log_summary(&summary);
+    log_selected_outputs(&context.state)?;
 
     let qh = context.event_queue.handle();
     context.state.queue_handle = Some(qh.clone());
@@ -55,7 +54,7 @@ pub fn run() -> Result<()> {
     let mut event_loop: EventLoop<AppState> =
         EventLoop::try_new().map_err(|err| AppError::event_loop("create event loop", err))?;
     context.state.loop_signal = Some(event_loop.get_signal());
-    install_repeat_timer(&event_loop, &context.state)?;
+    install_repeat_timer(&event_loop)?;
     install_animation_timer(&event_loop)?;
 
     WaylandSource::new(context.connection, context.event_queue)
@@ -75,28 +74,29 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn log_summary(summary: &StartupSummary) {
+fn log_selected_outputs(state: &AppState) -> Result<()> {
+    let selected = state.selected_outputs()?;
     tracing::info!(
-        total_outputs = summary.total_outputs,
-        selected_outputs = summary.selected_outputs.len(),
-        used_xdg_output = summary.used_xdg_output,
+        total_outputs = state.outputs.len(),
+        selected_outputs = selected.len(),
+        used_xdg_output = state.globals.xdg_output_manager.is_some(),
         "startup discovery completed"
     );
 
-    for output in &summary.selected_outputs {
+    for output in selected {
+        let geometry = output.logical_geometry;
         tracing::info!(
             name = output.name.as_deref().unwrap_or("<unnamed>"),
             geometry = %format!(
                 "{}x{}+{}+{}",
-                output.logical_geometry.width,
-                output.logical_geometry.height,
-                output.logical_geometry.x,
-                output.logical_geometry.y
+                geometry.width, geometry.height, geometry.x, geometry.y
             ),
             scale = output.logical_scale,
             "selected output"
         );
     }
+
+    Ok(())
 }
 
 fn wait_for_initial_captures(context: &mut WaylandContext, selected_outputs: &[u32]) -> Result<()> {
@@ -105,8 +105,7 @@ fn wait_for_initial_captures(context: &mut WaylandContext, selected_outputs: &[u
             .state
             .outputs
             .get(output_id)
-            .map(|output| output.buffer.is_some() && !output.capture_pending)
-            .unwrap_or(false)
+            .is_some_and(|output| output.buffer.is_some() && !output.capture_pending)
     }) {
         context
             .event_queue
@@ -121,14 +120,12 @@ fn wait_for_initial_captures(context: &mut WaylandContext, selected_outputs: &[u
     Ok(())
 }
 
-fn install_repeat_timer(event_loop: &EventLoop<'_, AppState>, state: &AppState) -> Result<()> {
-    let interval = state.repeat_interval;
-
+fn install_repeat_timer(event_loop: &EventLoop<'_, AppState>) -> Result<()> {
     event_loop
         .handle()
-        .insert_source(Timer::from_duration(interval), |_, _, state| {
+        .insert_source(Timer::from_duration(REPEAT_INTERVAL), |_, _, state| {
             input::repeat_timer_tick(state);
-            TimeoutAction::ToDuration(state.repeat_interval)
+            TimeoutAction::ToDuration(REPEAT_INTERVAL)
         })
         .map_err(|err| AppError::event_loop("insert repeat timer", err))?;
 

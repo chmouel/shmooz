@@ -2,26 +2,27 @@ use std::time::{Duration, Instant};
 
 use wayland_client::{
     Dispatch, QueueHandle, delegate_noop,
-    protocol::{wl_buffer, wl_callback, wl_region, wl_shm, wl_subsurface, wl_surface},
+    protocol::{
+        wl_buffer, wl_callback, wl_compositor, wl_region, wl_shm, wl_subcompositor, wl_subsurface,
+        wl_surface,
+    },
 };
 
 use crate::{
     error::{AppError, Result},
-    render, screenshot,
+    render::{self, AnnotationScene, CursorStyle, OverlayCursor},
+    screenshot,
     shm::ShmBuffer,
-    state::{
-        ActiveAnnotation, AnnotationItem, AnnotationPoint, AppState, ShapeAnnotation,
-        StrokeAnnotation, TextAnnotation, ToastState,
-    },
-    window::OverlayBufferSlot,
-    zoom::ViewRect,
+    state::{AnnotationPoint, AnnotationTool, AppState, InteractionMode, ToastState},
+    window::{OverlayBufferSlot, OverlayLayer, WindowState},
+    zoom::{Size, ViewRect, source_to_screen},
 };
 
 const ANNOTATION_BUFFER_COUNT: usize = 3;
 const SPOTLIGHT_MOVE_THRESHOLD_SQ: f64 = 16.0;
-pub const ZOOM_BADGE_WIDTH: i32 = 640;
-pub const ZOOM_BADGE_HEIGHT: i32 = 136;
-pub const ZOOM_BADGE_MARGIN: i32 = 24;
+const ZOOM_BADGE_WIDTH: i32 = 640;
+const ZOOM_BADGE_HEIGHT: i32 = 136;
+const ZOOM_BADGE_MARGIN: i32 = 24;
 const TOAST_WIDTH: i32 = ZOOM_BADGE_WIDTH;
 const TOAST_HEIGHT: i32 = ZOOM_BADGE_HEIGHT;
 const TOAST_DURATION: Duration = Duration::from_secs(2);
@@ -39,21 +40,161 @@ struct AnnotationFrameKey {
     output_id: u32,
 }
 
+#[derive(Clone, Copy)]
+enum Layer {
+    Spotlight,
+    ZoomBadge,
+    Toast,
+    ColorPicker,
+    Help,
+}
+
+fn layer(window: &WindowState, layer: Layer) -> Option<&OverlayLayer> {
+    match layer {
+        Layer::Spotlight => window.spotlight.as_ref(),
+        Layer::ZoomBadge => window.zoom_badge.as_ref(),
+        Layer::Toast => window.toast.as_ref(),
+        Layer::ColorPicker => window.color_picker.as_ref(),
+        Layer::Help => window.help.as_ref(),
+    }
+}
+
+fn layer_mut(window: &mut WindowState, layer: Layer) -> Option<&mut OverlayLayer> {
+    match layer {
+        Layer::Spotlight => window.spotlight.as_mut(),
+        Layer::ZoomBadge => window.zoom_badge.as_mut(),
+        Layer::Toast => window.toast.as_mut(),
+        Layer::ColorPicker => window.color_picker.as_mut(),
+        Layer::Help => window.help.as_mut(),
+    }
+}
+
+struct SubsurfaceFactory<'a> {
+    compositor: wl_compositor::WlCompositor,
+    subcompositor: wl_subcompositor::WlSubcompositor,
+    shm: wl_shm::WlShm,
+    parent: wl_surface::WlSurface,
+    qh: &'a QueueHandle<AppState>,
+}
+
+impl SubsurfaceFactory<'_> {
+    fn surface(&self, x: i32, y: i32) -> (wl_surface::WlSurface, wl_subsurface::WlSubsurface) {
+        let surface = self.compositor.create_surface(self.qh, ());
+        let subsurface = self
+            .subcompositor
+            .get_subsurface(&surface, &self.parent, self.qh, ());
+        let region = self.compositor.create_region(self.qh, ());
+        surface.set_input_region(Some(&region));
+        region.destroy();
+        subsurface.set_position(x, y);
+        subsurface.set_desync();
+        (surface, subsurface)
+    }
+
+    fn buffer<U: Send + Sync + 'static>(
+        &self,
+        width: i32,
+        height: i32,
+        user_data: U,
+    ) -> Result<ShmBuffer>
+    where
+        AppState: Dispatch<wl_buffer::WlBuffer, U>,
+    {
+        ShmBuffer::create_with_data(
+            &self.shm,
+            self.qh,
+            wl_shm::Format::Argb8888,
+            width,
+            height,
+            width * 4,
+            user_data,
+        )
+    }
+
+    fn layer(&self, width: i32, height: i32, x: i32, y: i32) -> Result<OverlayLayer> {
+        let buffer = self.buffer(width, height, ())?;
+        let (surface, subsurface) = self.surface(x, y);
+        Ok(OverlayLayer {
+            surface,
+            subsurface,
+            buffer,
+            visible: false,
+        })
+    }
+}
+
+/// Creates the overlay subsurfaces. Creation order is the stacking order.
 pub fn create_overlays_for_window(
     state: &mut AppState,
     output_id: u32,
     qh: &QueueHandle<AppState>,
 ) -> Result<()> {
-    if state.globals.subcompositor.is_none() {
+    let Some(subcompositor) = state.globals.subcompositor.clone() else {
         return Ok(());
-    }
+    };
+    let factory = SubsurfaceFactory {
+        compositor: state.globals.compositor()?,
+        subcompositor,
+        shm: state.globals.shm()?,
+        parent: window_surface(state, output_id)?,
+        qh,
+    };
+    let (width, height) = logical_size(state, output_id);
+    let has_size = width > 0 && height > 0;
 
-    create_spotlight_overlay(state, output_id, qh)?;
-    create_annotation_overlay(state, output_id, qh)?;
-    create_zoom_badge_overlay(state, output_id, qh)?;
-    create_toast_overlay(state, output_id, qh)?;
-    create_color_picker_overlay(state, output_id, qh)?;
-    create_help_overlay(state, output_id, qh)?;
+    let spotlight = has_size
+        .then(|| factory.layer(width, height, 0, 0))
+        .transpose()?;
+    let annotation = if has_size {
+        let (surface, subsurface) = factory.surface(0, 0);
+        let buffers = (0..ANNOTATION_BUFFER_COUNT)
+            .map(|slot| {
+                Ok(OverlayBufferSlot {
+                    buffer: factory.buffer(
+                        width,
+                        height,
+                        AnnotationBufferKey { output_id, slot },
+                    )?,
+                    busy: false,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Some((surface, subsurface, buffers))
+    } else {
+        None
+    };
+    let zoom_badge = state
+        .config
+        .show_indicator
+        .then(|| {
+            factory.layer(
+                ZOOM_BADGE_WIDTH,
+                ZOOM_BADGE_HEIGHT,
+                ZOOM_BADGE_MARGIN,
+                ZOOM_BADGE_MARGIN,
+            )
+        })
+        .transpose()?;
+    let toast = factory.layer(TOAST_WIDTH, TOAST_HEIGHT, 0, 0)?;
+    let color_picker = factory.layer(COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT, 0, 0)?;
+    let help = has_size
+        .then(|| factory.layer(width, height, 0, 0))
+        .transpose()?;
+
+    if let Some(window) = state.windows.get_mut(&output_id) {
+        window.spotlight = spotlight;
+        if let Some((surface, subsurface, buffers)) = annotation {
+            window.annotation_surface = Some(surface);
+            window.annotation_subsurface = Some(subsurface);
+            window.annotation_buffers = buffers;
+        }
+        window.zoom_badge = zoom_badge;
+        window.toast = Some(toast);
+        window.color_picker = Some(color_picker);
+        window.help = help;
+    }
+    position_toast_subsurface(state, output_id);
+    position_color_picker_subsurface(state, output_id);
     update_window_overlays(state, output_id);
 
     Ok(())
@@ -68,21 +209,49 @@ pub fn update_window_overlays(state: &mut AppState, output_id: u32) {
     update_help_overlay(state, output_id);
 }
 
-pub fn update_spotlight_overlays(state: &mut AppState) {
-    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        update_spotlight_overlay(state, output_id);
+fn for_each_window(state: &mut AppState, f: impl Fn(&mut AppState, u32)) {
+    for output_id in state.window_ids() {
+        f(state, output_id);
     }
 }
 
-pub fn refresh_visible_spotlight_overlays(state: &mut AppState) {
-    let output_ids = state
-        .windows
-        .iter()
-        .filter_map(|(output_id, window)| window.spotlight_visible.then_some(*output_id))
-        .collect::<Vec<_>>();
+pub fn update_spotlight_overlays(state: &mut AppState) {
+    for_each_window(state, update_spotlight_overlay);
+}
 
-    for output_id in output_ids {
+pub fn update_annotation_overlays(state: &mut AppState) {
+    for_each_window(state, update_annotation_overlay);
+}
+
+pub fn update_color_picker_overlays(state: &mut AppState) {
+    for_each_window(state, update_color_picker_overlay);
+}
+
+pub fn update_help_overlays(state: &mut AppState) {
+    for_each_window(state, update_help_overlay);
+}
+
+pub fn refresh_zoom_badge_overlays(state: &mut AppState) {
+    for_each_window(state, refresh_zoom_badge_overlay);
+}
+
+pub fn refresh_visible_spotlight_overlays(state: &mut AppState) {
+    for_each_window(state, |state, output_id| {
+        if layer_visible(state, output_id, Layer::Spotlight) {
+            refresh_spotlight_overlay(state, output_id);
+        }
+    });
+}
+
+pub fn refresh_spotlight_for_motion(
+    state: &mut AppState,
+    output_id: u32,
+    delta_x: f64,
+    delta_y: f64,
+) {
+    if delta_x * delta_x + delta_y * delta_y >= SPOTLIGHT_MOVE_THRESHOLD_SQ
+        && layer_visible(state, output_id, Layer::Spotlight)
+    {
         refresh_spotlight_overlay(state, output_id);
     }
 }
@@ -94,24 +263,6 @@ pub fn refresh_annotation_overlay(state: &mut AppState, output_id: u32) {
     flush_annotation_overlay(state, output_id);
 }
 
-pub fn refresh_zoom_badge_overlays(state: &mut AppState) {
-    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        refresh_zoom_badge_overlay(state, output_id);
-    }
-}
-
-pub fn update_color_picker_overlays(state: &mut AppState) {
-    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        update_color_picker_overlay(state, output_id);
-    }
-}
-
-pub fn refresh_color_picker_overlay(state: &mut AppState, output_id: u32) {
-    refresh_color_picker_overlay_inner(state, output_id);
-}
-
 pub fn show_toast(state: &mut AppState, output_id: u32, message: impl Into<String>) {
     let previous_output = state.toast.as_ref().map(|toast| toast.output_id);
     state.toast = Some(ToastState {
@@ -120,10 +271,8 @@ pub fn show_toast(state: &mut AppState, output_id: u32, message: impl Into<Strin
         expires_at: Instant::now() + TOAST_DURATION,
     });
 
-    if let Some(previous_output) =
-        previous_output.filter(|previous_output| *previous_output != output_id)
-    {
-        set_toast_visible(state, previous_output, false);
+    if let Some(previous_output) = previous_output.filter(|previous| *previous != output_id) {
+        set_layer_visible(state, previous_output, Layer::Toast, false);
     }
 
     update_toast_overlay(state, output_id);
@@ -136,335 +285,296 @@ pub fn expire_toast(state: &mut AppState) {
         .and_then(|toast| (Instant::now() >= toast.expires_at).then_some(toast.output_id));
     if let Some(output_id) = expired_output {
         state.toast = None;
-        set_toast_visible(state, output_id, false);
+        set_layer_visible(state, output_id, Layer::Toast, false);
     }
 }
 
-pub fn update_annotation_overlays(state: &mut AppState) {
-    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        update_annotation_overlay(state, output_id);
-    }
-}
-
-pub fn refresh_spotlight_for_motion(
-    state: &mut AppState,
-    output_id: u32,
-    delta_x: f64,
-    delta_y: f64,
-) {
-    if delta_x * delta_x + delta_y * delta_y < SPOTLIGHT_MOVE_THRESHOLD_SQ {
-        return;
-    }
-
-    let is_visible = state
+fn layer_visible(state: &AppState, output_id: u32, kind: Layer) -> bool {
+    state
         .windows
         .get(&output_id)
-        .map(|window| window.spotlight_visible)
-        .unwrap_or(false);
-    if is_visible {
+        .and_then(|window| layer(window, kind))
+        .is_some_and(|layer| layer.visible)
+}
+
+/// Returns whether the visibility changed. Hiding commits a null buffer.
+fn set_layer_visible(state: &mut AppState, output_id: u32, kind: Layer, show: bool) -> bool {
+    let Some(layer) = state
+        .windows
+        .get_mut(&output_id)
+        .and_then(|window| layer_mut(window, kind))
+    else {
+        return false;
+    };
+    if layer.visible == show {
+        return false;
+    }
+
+    layer.visible = show;
+    if !show {
+        commit_surface_hide(&layer.surface, layer.buffer.width, layer.buffer.height);
+    }
+    true
+}
+
+fn paint_layer(
+    state: &mut AppState,
+    output_id: u32,
+    kind: Layer,
+    paint: impl FnOnce(&mut [u8], usize, usize),
+) {
+    let Some(layer) = state
+        .windows
+        .get_mut(&output_id)
+        .and_then(|window| layer_mut(window, kind))
+    else {
+        return;
+    };
+    let (width, height) = (layer.buffer.width, layer.buffer.height);
+
+    paint(layer.buffer.data.as_mut(), width as usize, height as usize);
+    layer.surface.attach(Some(&layer.buffer.wl_buffer), 0, 0);
+    layer.surface.damage(0, 0, width, height);
+    layer.surface.commit();
+}
+
+fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
+    let show = spotlight_overlay_should_show(
+        state.spotlight_enabled,
+        state.interaction_mode.is_annotating(),
+    );
+    if set_layer_visible(state, output_id, Layer::Spotlight, show) && show {
         refresh_spotlight_overlay(state, output_id);
     }
 }
 
-fn create_spotlight_overlay(
-    state: &mut AppState,
-    output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
-    };
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-    let size = logical_size(state, output_id);
-    if size.0 <= 0 || size.1 <= 0 {
-        return Ok(());
-    }
-
-    let buffer = ShmBuffer::create(
-        &shm,
-        qh,
-        wl_shm::Format::Argb8888,
-        size.0,
-        size.1,
-        size.0 * 4,
-    )?;
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_position(0, 0);
-    subsurface.set_desync();
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.spotlight_buffer = Some(buffer);
-        window.spotlight_surface = Some(surface);
-        window.spotlight_subsurface = Some(subsurface);
-    }
-
-    Ok(())
+fn spotlight_overlay_should_show(spotlight_enabled: bool, annotating: bool) -> bool {
+    spotlight_enabled && !annotating
 }
 
-fn create_annotation_overlay(
-    state: &mut AppState,
-    output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
+fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
+    let Some(window) = state.windows.get(&output_id) else {
+        return;
     };
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-    let size = logical_size(state, output_id);
-    if size.0 <= 0 || size.1 <= 0 {
-        return Ok(());
+    let center_x = window.pointer_x.max(0.0) as usize;
+    let center_y = window.pointer_y.max(0.0) as usize;
+    let radius_frac = state.spotlight_radius_frac;
+
+    paint_layer(
+        state,
+        output_id,
+        Layer::Spotlight,
+        |pixels, width, height| {
+            let radius = width.min(height) as f64 * radius_frac;
+            render::draw_spotlight_overlay(pixels, width, height, center_x, center_y, radius);
+        },
+    );
+}
+
+fn update_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
+    let show = state.config.show_indicator;
+    set_layer_visible(state, output_id, Layer::ZoomBadge, show);
+    if show {
+        refresh_zoom_badge_overlay(state, output_id);
     }
+}
 
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_position(0, 0);
-    subsurface.set_desync();
+fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
+    let spotlight_radius_pct = state
+        .spotlight_enabled
+        .then(|| (state.spotlight_radius_frac * 100.0).round() as u32);
+    let badge = state.interaction_mode.badge(
+        state.effective_annotation_tool(),
+        state.selected_palette_color(),
+        state.text_annotation_scale,
+        state.config.close_key,
+        spotlight_radius_pct,
+    );
 
-    let mut buffers = Vec::with_capacity(ANNOTATION_BUFFER_COUNT);
-    for slot in 0..ANNOTATION_BUFFER_COUNT {
-        buffers.push(OverlayBufferSlot {
-            buffer: ShmBuffer::create_with_data(
-                &shm,
-                qh,
-                wl_shm::Format::Argb8888,
-                size.0,
-                size.1,
-                size.0 * 4,
-                AnnotationBufferKey { output_id, slot },
-            )?,
-            busy: false,
+    paint_layer(
+        state,
+        output_id,
+        Layer::ZoomBadge,
+        |pixels, width, height| {
+            render::paint_zoom_badge(pixels, width, height, &badge);
+        },
+    );
+}
+
+fn update_toast_overlay(state: &mut AppState, output_id: u32) {
+    let show = state
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.output_id == output_id);
+    set_layer_visible(state, output_id, Layer::Toast, show);
+    if show {
+        refresh_toast_overlay(state, output_id);
+    }
+}
+
+fn refresh_toast_overlay(state: &mut AppState, output_id: u32) {
+    let Some(message) = state
+        .toast
+        .as_ref()
+        .filter(|toast| toast.output_id == output_id)
+        .map(|toast| toast.message.clone())
+    else {
+        return;
+    };
+
+    position_toast_subsurface(state, output_id);
+    paint_layer(state, output_id, Layer::Toast, |pixels, width, height| {
+        render::paint_toast(pixels, width, height, "SCREENSHOT SAVED", &message);
+    });
+}
+
+fn update_color_picker_overlay(state: &mut AppState, output_id: u32) {
+    let show = state.interaction_mode == InteractionMode::ColorPicker
+        && cursor_visible_for_output(state, output_id);
+    set_layer_visible(state, output_id, Layer::ColorPicker, show);
+    if show {
+        refresh_color_picker_overlay(state, output_id);
+    }
+}
+
+pub fn refresh_color_picker_overlay(state: &mut AppState, output_id: u32) {
+    let Ok(color) = screenshot::output_color_value_at_pointer(state, output_id) else {
+        return;
+    };
+    let hex = screenshot::rgb_hex(color);
+    let copied = state.color_picker_copied;
+
+    position_color_picker_subsurface(state, output_id);
+    paint_layer(
+        state,
+        output_id,
+        Layer::ColorPicker,
+        |pixels, width, height| {
+            render::paint_color_picker(pixels, width, height, color, &hex, copied);
+        },
+    );
+}
+
+fn update_help_overlay(state: &mut AppState, output_id: u32) {
+    let show = state.help_visible;
+    set_layer_visible(state, output_id, Layer::Help, show);
+    if show {
+        let close_key = state.config.close_key;
+        paint_layer(state, output_id, Layer::Help, |pixels, width, height| {
+            render::paint_help_overlay(pixels, width, height, close_key);
         });
     }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.annotation_buffers = buffers;
-        window.annotation_surface = Some(surface);
-        window.annotation_subsurface = Some(subsurface);
-    }
-
-    Ok(())
 }
 
-fn create_zoom_badge_overlay(
-    state: &mut AppState,
-    output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    if !state.config.show_indicator {
-        return Ok(());
+fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
+    let should_show = state.windows.get(&output_id).is_some_and(|window| {
+        window.annotation_surface.is_some()
+            && (cursor_visible_for_output(state, output_id)
+                || state.interaction_mode.is_annotating()
+                || !window.annotations.is_empty()
+                || window.active_annotation.is_some()
+                || window.active_text.is_some()
+                || window.shift_select_start.is_some())
+    });
+
+    set_annotation_overlay_visible(state, output_id, should_show);
+    if should_show {
+        refresh_annotation_overlay(state, output_id);
     }
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
+}
+
+fn set_annotation_overlay_visible(state: &mut AppState, output_id: u32, show: bool) {
+    let (width, height) = logical_size(state, output_id);
+    let Some(window) = state.windows.get_mut(&output_id) else {
+        return;
     };
-
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-
-    let buffer = ShmBuffer::create(
-        &shm,
-        qh,
-        wl_shm::Format::Argb8888,
-        ZOOM_BADGE_WIDTH,
-        ZOOM_BADGE_HEIGHT,
-        ZOOM_BADGE_WIDTH * 4,
-    )?;
-
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_position(ZOOM_BADGE_MARGIN, ZOOM_BADGE_MARGIN);
-    subsurface.set_desync();
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.zoom_badge_buffer = Some(buffer);
-        window.zoom_badge_surface = Some(surface);
-        window.zoom_badge_subsurface = Some(subsurface);
-    }
-
-    Ok(())
-}
-
-fn create_toast_overlay(
-    state: &mut AppState,
-    output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
+    let Some(surface) = window.annotation_surface.as_ref() else {
+        return;
     };
-
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-
-    let buffer = ShmBuffer::create(
-        &shm,
-        qh,
-        wl_shm::Format::Argb8888,
-        TOAST_WIDTH,
-        TOAST_HEIGHT,
-        TOAST_WIDTH * 4,
-    )?;
-
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_desync();
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.toast_buffer = Some(buffer);
-        window.toast_surface = Some(surface);
-        window.toast_subsurface = Some(subsurface);
+    if window.annotation_visible == show {
+        return;
     }
-    position_toast_subsurface(state, output_id);
 
-    Ok(())
-}
-
-fn create_color_picker_overlay(
-    state: &mut AppState,
-    output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
-    };
-
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-
-    let buffer = ShmBuffer::create(
-        &shm,
-        qh,
-        wl_shm::Format::Argb8888,
-        COLOR_PICKER_WIDTH,
-        COLOR_PICKER_HEIGHT,
-        COLOR_PICKER_WIDTH * 4,
-    )?;
-
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_desync();
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.color_picker_buffer = Some(buffer);
-        window.color_picker_surface = Some(surface);
-        window.color_picker_subsurface = Some(subsurface);
+    window.annotation_visible = show;
+    if !show {
+        window.annotation_frame_callback = None;
+        window.annotation_redraw_pending = false;
+        commit_surface_hide(surface, width, height);
     }
-    position_color_picker_subsurface(state, output_id);
-
-    Ok(())
 }
 
-fn make_surface_input_transparent(
-    compositor: &wayland_client::protocol::wl_compositor::WlCompositor,
-    surface: &wl_surface::WlSurface,
-    qh: &QueueHandle<AppState>,
-) {
-    let region = compositor.create_region(qh, ());
-    surface.set_input_region(Some(&region));
-    region.destroy();
-}
-
-type AnnotationRenderInputs = (
-    Vec<AnnotationItem>,
-    Option<ActiveAnnotation>,
-    Option<TextAnnotation>,
-    Option<render::OverlayCursor>,
-);
-
-fn build_annotation_render_inputs(
+fn annotation_scene(
     state: &AppState,
     output_id: u32,
     width: f64,
     height: f64,
-) -> Option<AnnotationRenderInputs> {
-    let effective_tool = state.effective_annotation_tool();
-    let show_cursor = cursor_visible_for_output(state, output_id);
+) -> Option<AnnotationScene> {
     let window = state.windows.get(&output_id)?;
-    let cursor = show_cursor.then_some(render::OverlayCursor {
-        position: AnnotationPoint::new(window.pointer_x, window.pointer_y),
-        style: if effective_tool == crate::state::AnnotationTool::Move {
-            render::CursorStyle::Hand
+    let screen = Size { width, height };
+    let project = |point| project_point(point, window.view_source, screen);
+    let pointer = AnnotationPoint::new(window.pointer_x, window.pointer_y);
+    let cursor = cursor_visible_for_output(state, output_id).then(|| OverlayCursor {
+        position: pointer,
+        style: if state.effective_annotation_tool() == AnnotationTool::Move {
+            CursorStyle::Hand
         } else {
-            render::CursorStyle::Crosshair
+            CursorStyle::Crosshair
         },
     });
-    let projected_annotations =
-        project_annotations(&window.annotations, window.view_source, width, height);
-    let projected_active = window
-        .active_annotation
-        .as_ref()
-        .map(|a| project_active_annotation(a, window.view_source, width, height));
-    let projected_text = window
-        .active_text
-        .as_ref()
-        .map(|t| project_text_annotation(t, window.view_source, width, height));
-    Some((
-        projected_annotations,
-        projected_active,
-        projected_text,
+
+    Some(AnnotationScene {
+        annotations: window
+            .annotations
+            .iter()
+            .map(|annotation| {
+                let mut annotation = annotation.clone();
+                annotation.map_points(project);
+                annotation
+            })
+            .collect(),
+        active_annotation: window.active_annotation.clone().map(|mut annotation| {
+            annotation.map_points(project);
+            annotation
+        }),
+        active_text: window.active_text.clone().map(|mut text| {
+            text.map_points(project);
+            text
+        }),
         cursor,
-    ))
+        shift_select_rect: window
+            .shift_select_start
+            .map(|start| (project(start), pointer)),
+    })
 }
 
 fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
-    let qh = match state.queue_handle.clone() {
-        Some(qh) => qh,
-        None => return,
+    let Some(qh) = state.queue_handle.clone() else {
+        return;
     };
     let (width, height) = logical_size(state, output_id);
     if width <= 0 || height <= 0 {
         return;
     }
 
-    let ready = state.windows.get(&output_id).is_some_and(|w| {
-        w.annotation_visible && w.annotation_frame_callback.is_none() && w.annotation_redraw_pending
-    });
-    if !ready {
+    let Some(window) = state.windows.get(&output_id) else {
+        return;
+    };
+    if !window.annotation_visible
+        || window.annotation_frame_callback.is_some()
+        || !window.annotation_redraw_pending
+    {
         return;
     }
-
-    let surface = state
-        .windows
-        .get(&output_id)
-        .and_then(|w| w.annotation_surface.as_ref().cloned());
-    let Some(surface) = surface else {
+    let Some(surface) = window.annotation_surface.clone() else {
         return;
     };
-
-    let slot_index = state
-        .windows
-        .get(&output_id)
-        .and_then(|w| w.annotation_buffers.iter().position(|s| !s.busy));
-    let Some(slot_index) = slot_index else {
+    let Some(slot_index) = window.annotation_buffers.iter().position(|s| !s.busy) else {
         return;
     };
-
-    let Some((projected_annotations, projected_active, projected_text, cursor)) =
-        build_annotation_render_inputs(state, output_id, width as f64, height as f64)
+    let Some(scene) = annotation_scene(state, output_id, f64::from(width), f64::from(height))
     else {
         return;
     };
-
-    let shift_select_rect = state.windows.get(&output_id).and_then(|w| {
-        w.shift_select_start.map(|start| {
-            let start_projected = project_point(start, w.view_source, width as f64, height as f64);
-            let end_projected = AnnotationPoint::new(w.pointer_x, w.pointer_y);
-            (start_projected, end_projected)
-        })
-    });
 
     let Some(window) = state.windows.get_mut(&output_id) else {
         return;
@@ -475,11 +585,7 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
         slot.buffer.data.as_mut(),
         width as usize,
         height as usize,
-        &projected_annotations,
-        projected_active.as_ref(),
-        projected_text.as_ref(),
-        cursor,
-        shift_select_rect,
+        &scene,
     );
     slot.busy = true;
     window.annotation_redraw_pending = false;
@@ -493,467 +599,16 @@ fn flush_annotation_overlay(state: &mut AppState, output_id: u32) {
     window.annotation_frame_callback = Some(callback);
 }
 
-fn refresh_spotlight_overlay(state: &mut AppState, output_id: u32) {
-    let (width, height) = logical_size(state, output_id);
-    let Some(window) = state.windows.get_mut(&output_id) else {
-        return;
-    };
-    let Some(buffer) = window.spotlight_buffer.as_mut() else {
-        return;
-    };
-    let Some(surface) = window.spotlight_surface.as_ref() else {
-        return;
-    };
-
-    let radius = f64::from(width.min(height)) * state.spotlight_radius_frac;
-    render::draw_spotlight_overlay(
-        buffer.data.as_mut(),
-        width as usize,
-        height as usize,
-        window.pointer_x.max(0.0) as usize,
-        window.pointer_y.max(0.0) as usize,
-        radius,
-    );
-    surface.attach(Some(&buffer.wl_buffer), 0, 0);
-    surface.damage(0, 0, width, height);
-    surface.commit();
-}
-
-fn refresh_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
-    let effective_tool = state.effective_annotation_tool();
-    let spotlight_radius_pct = if state.spotlight_enabled {
-        Some((state.spotlight_radius_frac * 100.0).round() as u32)
-    } else {
-        None
-    };
-    let badge = state.interaction_mode.badge(
-        effective_tool,
-        state.selected_palette_color(),
-        state.text_annotation_scale,
-        state.config.close_key,
-        spotlight_radius_pct,
-    );
-    let Some(window) = state.windows.get_mut(&output_id) else {
-        return;
-    };
-    let Some(surface) = window.zoom_badge_surface.as_ref() else {
-        return;
-    };
-    let Some(buffer) = window.zoom_badge_buffer.as_mut() else {
-        return;
-    };
-
-    render::paint_zoom_badge(
-        buffer.data.as_mut(),
-        ZOOM_BADGE_WIDTH as usize,
-        ZOOM_BADGE_HEIGHT as usize,
-        &badge,
-    );
-    surface.attach(Some(&buffer.wl_buffer), 0, 0);
-    surface.damage(0, 0, ZOOM_BADGE_WIDTH, ZOOM_BADGE_HEIGHT);
-    surface.commit();
-}
-
-fn refresh_toast_overlay(state: &mut AppState, output_id: u32) {
-    let message = state
-        .toast
-        .as_ref()
-        .filter(|toast| toast.output_id == output_id)
-        .map(|toast| toast.message.clone());
-    let Some(message) = message else {
-        return;
-    };
-
-    position_toast_subsurface(state, output_id);
-
-    let Some(window) = state.windows.get_mut(&output_id) else {
-        return;
-    };
-    let Some(surface) = window.toast_surface.as_ref() else {
-        return;
-    };
-    let Some(buffer) = window.toast_buffer.as_mut() else {
-        return;
-    };
-
-    render::paint_toast(
-        buffer.data.as_mut(),
-        TOAST_WIDTH as usize,
-        TOAST_HEIGHT as usize,
-        "SCREENSHOT SAVED",
-        &message,
-    );
-    surface.attach(Some(&buffer.wl_buffer), 0, 0);
-    surface.damage(0, 0, TOAST_WIDTH, TOAST_HEIGHT);
-    surface.commit();
-}
-
-fn refresh_color_picker_overlay_inner(state: &mut AppState, output_id: u32) {
-    let Ok(color) = screenshot::output_color_value_at_pointer(state, output_id) else {
-        return;
-    };
-    let hex = screenshot::rgb_hex(color);
-    position_color_picker_subsurface(state, output_id);
-
-    let copied = state.color_picker_copied;
-    let Some(window) = state.windows.get_mut(&output_id) else {
-        return;
-    };
-    let Some(surface) = window.color_picker_surface.as_ref() else {
-        return;
-    };
-    let Some(buffer) = window.color_picker_buffer.as_mut() else {
-        return;
-    };
-
-    render::paint_color_picker(
-        buffer.data.as_mut(),
-        COLOR_PICKER_WIDTH as usize,
-        COLOR_PICKER_HEIGHT as usize,
-        color,
-        &hex,
-        copied,
-    );
-    surface.attach(Some(&buffer.wl_buffer), 0, 0);
-    surface.damage(0, 0, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT);
-    surface.commit();
-}
-
-fn update_spotlight_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| {
-            spotlight_overlay_should_show(
-                window.spotlight_surface.is_some(),
-                state.spotlight_enabled,
-                state.interaction_mode.is_annotating(),
-            )
-        })
-        .unwrap_or(false);
-
-    set_spotlight_overlay_visible(state, output_id, should_show);
-}
-
-fn spotlight_overlay_should_show(
-    has_surface: bool,
-    spotlight_enabled: bool,
-    annotating: bool,
-) -> bool {
-    has_surface && spotlight_enabled && !annotating
-}
-
-fn update_annotation_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| {
-            window.annotation_surface.is_some()
-                && (cursor_visible_for_output(state, output_id)
-                    || state.interaction_mode.is_annotating()
-                    || !window.annotations.is_empty()
-                    || window.active_annotation.is_some()
-                    || window.active_text.is_some()
-                    || window.shift_select_start.is_some())
-        })
-        .unwrap_or(false);
-
-    set_annotation_overlay_visible(state, output_id, should_show);
-    if should_show {
-        refresh_annotation_overlay(state, output_id);
-    }
-}
-
-fn update_zoom_badge_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| state.config.show_indicator && window.zoom_badge_surface.is_some())
-        .unwrap_or(false);
-
-    set_zoom_badge_visible(state, output_id, should_show);
-    if should_show {
-        refresh_zoom_badge_overlay(state, output_id);
-    }
-}
-
-fn update_toast_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| {
-            window.toast_surface.is_some()
-                && state
-                    .toast
-                    .as_ref()
-                    .is_some_and(|toast| toast.output_id == output_id)
-        })
-        .unwrap_or(false);
-
-    set_toast_visible(state, output_id, should_show);
-    if should_show {
-        refresh_toast_overlay(state, output_id);
-    }
-}
-
-fn update_color_picker_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| {
-            window.color_picker_surface.is_some()
-                && state.interaction_mode == crate::state::InteractionMode::ColorPicker
-                && cursor_visible_for_output(state, output_id)
-        })
-        .unwrap_or(false);
-
-    set_color_picker_visible(state, output_id, should_show);
-    if should_show {
-        refresh_color_picker_overlay_inner(state, output_id);
-    }
-}
-
-fn set_spotlight_overlay_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state.windows.get(&output_id).map(|window| {
-        (
-            window.spotlight_visible,
-            window.spotlight_surface.as_ref().cloned(),
-        )
-    }) else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.spotlight_visible = show;
-    }
-
-    if show {
-        refresh_spotlight_overlay(state, output_id);
-    } else {
-        let (width, height) = logical_size(state, output_id);
-        commit_surface_hide(&surface, width, height);
-    }
-}
-
-fn set_annotation_overlay_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state.windows.get(&output_id).map(|window| {
-        (
-            window.annotation_visible,
-            window.annotation_surface.as_ref().cloned(),
-        )
-    }) else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.annotation_visible = show;
-        if !show {
-            window.annotation_frame_callback = None;
-            window.annotation_redraw_pending = false;
-        }
-    }
-
-    if !show {
-        let (width, height) = logical_size(state, output_id);
-        commit_surface_hide(&surface, width, height);
-    }
-}
-
-fn set_zoom_badge_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state.windows.get(&output_id).map(|window| {
-        (
-            window.zoom_badge_visible,
-            window.zoom_badge_surface.as_ref().cloned(),
-        )
-    }) else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.zoom_badge_visible = show;
-    }
-
-    if !show {
-        commit_surface_hide(&surface, ZOOM_BADGE_WIDTH, ZOOM_BADGE_HEIGHT);
-    }
-}
-
-fn set_toast_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state
-        .windows
-        .get(&output_id)
-        .map(|window| (window.toast_visible, window.toast_surface.as_ref().cloned()))
-    else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.toast_visible = show;
-    }
-
-    if show {
-        refresh_toast_overlay(state, output_id);
-    } else {
-        commit_surface_hide(&surface, TOAST_WIDTH, TOAST_HEIGHT);
-    }
-}
-
-fn set_color_picker_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state.windows.get(&output_id).map(|window| {
-        (
-            window.color_picker_visible,
-            window.color_picker_surface.as_ref().cloned(),
-        )
-    }) else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.color_picker_visible = show;
-    }
-
-    if show {
-        refresh_color_picker_overlay_inner(state, output_id);
-    } else {
-        commit_surface_hide(&surface, COLOR_PICKER_WIDTH, COLOR_PICKER_HEIGHT);
-    }
-}
-
-fn create_help_overlay(
-    state: &mut AppState,
+pub fn draw_annotation_overlay_snapshot(
+    state: &AppState,
     output_id: u32,
-    qh: &QueueHandle<AppState>,
-) -> Result<()> {
-    let Some(subcompositor) = state.globals.subcompositor.clone() else {
-        return Ok(());
-    };
-    let compositor = state.globals.compositor()?;
-    let shm = state.globals.shm()?;
-    let (w, h) = logical_size(state, output_id);
-    if w <= 0 || h <= 0 {
-        return Ok(());
-    }
-
-    let buffer = ShmBuffer::create(&shm, qh, wl_shm::Format::Argb8888, w, h, w * 4)?;
-    let surface = compositor.create_surface(qh, ());
-    let subsurface =
-        subcompositor.get_subsurface(&surface, &window_surface(state, output_id)?, qh, ());
-    make_surface_input_transparent(&compositor, &surface, qh);
-    subsurface.set_position(0, 0);
-    subsurface.set_desync();
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.help_buffer = Some(buffer);
-        window.help_surface = Some(surface);
-        window.help_subsurface = Some(subsurface);
-    }
-
-    Ok(())
-}
-
-fn update_help_overlay(state: &mut AppState, output_id: u32) {
-    let should_show = state
-        .windows
-        .get(&output_id)
-        .map(|window| window.help_surface.is_some() && state.help_visible)
-        .unwrap_or(false);
-
-    set_help_visible(state, output_id, should_show);
-    if should_show {
-        refresh_help_overlay(state, output_id);
-    }
-}
-
-fn set_help_visible(state: &mut AppState, output_id: u32, show: bool) {
-    let Some((was_visible, surface)) = state
-        .windows
-        .get(&output_id)
-        .map(|window| (window.help_visible, window.help_surface.as_ref().cloned()))
-    else {
-        return;
-    };
-    let Some(surface) = surface else {
-        return;
-    };
-
-    if was_visible == show {
-        return;
-    }
-
-    if let Some(window) = state.windows.get_mut(&output_id) {
-        window.help_visible = show;
-    }
-
-    if !show {
-        let (width, height) = logical_size(state, output_id);
-        commit_surface_hide(&surface, width, height);
-    }
-}
-
-fn refresh_help_overlay(state: &mut AppState, output_id: u32) {
-    let (width, height) = logical_size(state, output_id);
-    let close_key = state.config.close_key;
-
-    let Some(window) = state.windows.get_mut(&output_id) else {
-        return;
-    };
-    let Some(buffer) = window.help_buffer.as_mut() else {
-        return;
-    };
-    let Some(surface) = window.help_surface.as_ref() else {
-        return;
-    };
-
-    render::paint_help_overlay(
-        buffer.data.as_mut(),
-        width as usize,
-        height as usize,
-        close_key,
-    );
-    surface.attach(Some(&buffer.wl_buffer), 0, 0);
-    surface.damage(0, 0, width, height);
-    surface.commit();
-}
-
-pub fn update_help_overlays(state: &mut AppState) {
-    let output_ids = state.windows.keys().copied().collect::<Vec<_>>();
-    for output_id in output_ids {
-        update_help_overlay(state, output_id);
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+) {
+    match annotation_scene(state, output_id, width as f64, height as f64) {
+        Some(scene) => render::draw_annotation_overlay(pixels, width, height, &scene),
+        None => pixels.fill(0),
     }
 }
 
@@ -961,8 +616,7 @@ fn logical_size(state: &AppState, output_id: u32) -> (i32, i32) {
     state
         .outputs
         .get(&output_id)
-        .map(|output| output.logical_size())
-        .unwrap_or((0, 0))
+        .map_or((0, 0), |output| output.logical_size())
 }
 
 fn commit_surface_hide(surface: &wl_surface::WlSurface, width: i32, height: i32) {
@@ -974,25 +628,29 @@ fn commit_surface_hide(surface: &wl_surface::WlSurface, width: i32, height: i32)
 fn position_toast_subsurface(state: &AppState, output_id: u32) {
     let (width, _) = logical_size(state, output_id);
     let x = (width - TOAST_WIDTH - ZOOM_BADGE_MARGIN).max(0);
-    let y = if state.interaction_mode == crate::state::InteractionMode::ColorPicker {
+    let y = if state.interaction_mode == InteractionMode::ColorPicker {
         ZOOM_BADGE_MARGIN + COLOR_PICKER_HEIGHT + 8
     } else {
         ZOOM_BADGE_MARGIN
     };
-    if let Some(window) = state.windows.get(&output_id)
-        && let Some(subsurface) = window.toast_subsurface.as_ref()
+    if let Some(toast) = state
+        .windows
+        .get(&output_id)
+        .and_then(|window| window.toast.as_ref())
     {
-        subsurface.set_position(x, y);
+        toast.subsurface.set_position(x, y);
     }
 }
 
 fn position_color_picker_subsurface(state: &AppState, output_id: u32) {
     let (width, _) = logical_size(state, output_id);
     let x = (width - COLOR_PICKER_WIDTH - ZOOM_BADGE_MARGIN).max(0);
-    if let Some(window) = state.windows.get(&output_id)
-        && let Some(subsurface) = window.color_picker_subsurface.as_ref()
+    if let Some(color_picker) = state
+        .windows
+        .get(&output_id)
+        .and_then(|window| window.color_picker.as_ref())
     {
-        subsurface.set_position(x, ZOOM_BADGE_MARGIN);
+        color_picker.subsurface.set_position(x, ZOOM_BADGE_MARGIN);
     }
 }
 
@@ -1001,158 +659,9 @@ fn cursor_visible_for_output(state: &AppState, output_id: u32) -> bool {
         || (state.focused_window.is_none() && state.windows.len() == 1)
 }
 
-pub fn draw_annotation_overlay_snapshot(
-    state: &AppState,
-    output_id: u32,
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-) {
-    let Some((projected_annotations, projected_active, projected_text, cursor)) =
-        build_annotation_render_inputs(state, output_id, width as f64, height as f64)
-    else {
-        pixels.fill(0);
-        return;
-    };
-
-    let shift_select_rect = state.windows.get(&output_id).and_then(|w| {
-        w.shift_select_start.map(|start| {
-            let start_projected = project_point(start, w.view_source, width as f64, height as f64);
-            let end_projected = AnnotationPoint::new(w.pointer_x, w.pointer_y);
-            (start_projected, end_projected)
-        })
-    });
-
-    render::draw_annotation_overlay(
-        pixels,
-        width,
-        height,
-        &projected_annotations,
-        projected_active.as_ref(),
-        projected_text.as_ref(),
-        cursor,
-        shift_select_rect,
-    );
-}
-
-fn project_annotations(
-    annotations: &[AnnotationItem],
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> Vec<AnnotationItem> {
-    annotations
-        .iter()
-        .map(|annotation| match annotation {
-            AnnotationItem::Stroke(stroke) => AnnotationItem::Stroke(project_stroke(
-                stroke,
-                view_source,
-                logical_width,
-                logical_height,
-            )),
-            AnnotationItem::Shape(shape) => AnnotationItem::Shape(project_shape(
-                shape,
-                view_source,
-                logical_width,
-                logical_height,
-            )),
-            AnnotationItem::Text(text) => AnnotationItem::Text(project_text_annotation(
-                text,
-                view_source,
-                logical_width,
-                logical_height,
-            )),
-        })
-        .collect()
-}
-
-fn project_active_annotation(
-    annotation: &ActiveAnnotation,
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> ActiveAnnotation {
-    match annotation {
-        ActiveAnnotation::Stroke(stroke) => ActiveAnnotation::Stroke(project_stroke(
-            stroke,
-            view_source,
-            logical_width,
-            logical_height,
-        )),
-        ActiveAnnotation::Shape(shape) => ActiveAnnotation::Shape(project_shape(
-            shape,
-            view_source,
-            logical_width,
-            logical_height,
-        )),
-    }
-}
-
-fn project_stroke(
-    stroke: &StrokeAnnotation,
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> StrokeAnnotation {
-    StrokeAnnotation {
-        points: stroke
-            .points
-            .iter()
-            .copied()
-            .map(|point| project_point(point, view_source, logical_width, logical_height))
-            .collect(),
-        color: stroke.color,
-        width: stroke.width,
-    }
-}
-
-fn project_shape(
-    shape: &ShapeAnnotation,
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> ShapeAnnotation {
-    ShapeAnnotation {
-        kind: shape.kind,
-        start: project_point(shape.start, view_source, logical_width, logical_height),
-        end: project_point(shape.end, view_source, logical_width, logical_height),
-        color: shape.color,
-        width: shape.width,
-    }
-}
-
-fn project_text_annotation(
-    text: &TextAnnotation,
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> TextAnnotation {
-    TextAnnotation {
-        position: project_point(text.position, view_source, logical_width, logical_height),
-        text: text.text.clone(),
-        color: text.color,
-        scale: text.scale,
-    }
-}
-
-fn project_point(
-    point: AnnotationPoint,
-    view_source: ViewRect,
-    logical_width: f64,
-    logical_height: f64,
-) -> AnnotationPoint {
-    if view_source.width <= 0.0
-        || view_source.height <= 0.0
-        || logical_width <= 0.0
-        || logical_height <= 0.0
-    {
-        return point;
-    }
-
-    AnnotationPoint::new(
-        ((point.x as f64 - view_source.x) / view_source.width) * logical_width,
-        ((point.y as f64 - view_source.y) / view_source.height) * logical_height,
-    )
+fn project_point(point: AnnotationPoint, view_source: ViewRect, screen: Size) -> AnnotationPoint {
+    let point = source_to_screen(point.into(), view_source, screen);
+    AnnotationPoint::new(point.x, point.y)
 }
 
 fn window_surface(state: &AppState, output_id: u32) -> Result<wl_surface::WlSurface> {
@@ -1205,7 +714,10 @@ impl Dispatch<wl_callback::WlCallback, AnnotationFrameKey> for AppState {
 
 #[cfg(test)]
 mod tests {
-    use crate::{state::AnnotationPoint, zoom::ViewRect};
+    use crate::{
+        state::AnnotationPoint,
+        zoom::{Size, ViewRect},
+    };
 
     use super::{project_point, spotlight_overlay_should_show};
 
@@ -1223,10 +735,14 @@ mod tests {
             width: 800.0,
             height: 400.0,
         };
+        let screen = Size {
+            width: 800.0,
+            height: 400.0,
+        };
         let stored = AnnotationPoint { x: 300, y: 150 };
 
-        let zoomed_screen = project_point(stored, zoomed, 800.0, 400.0);
-        let full_screen = project_point(stored, full, 800.0, 400.0);
+        let zoomed_screen = project_point(stored, zoomed, screen);
+        let full_screen = project_point(stored, full, screen);
 
         assert_eq!(zoomed_screen, AnnotationPoint { x: 400, y: 200 });
         assert_eq!(full_screen, AnnotationPoint { x: 300, y: 150 });
@@ -1234,14 +750,13 @@ mod tests {
 
     #[test]
     fn spotlight_overlay_can_show_without_zoom() {
-        assert!(spotlight_overlay_should_show(true, true, false));
+        assert!(spotlight_overlay_should_show(true, false));
     }
 
     #[test]
-    fn spotlight_overlay_requires_surface_and_navigation_mode() {
-        assert!(!spotlight_overlay_should_show(false, true, false));
-        assert!(!spotlight_overlay_should_show(true, false, false));
-        assert!(!spotlight_overlay_should_show(true, true, true));
+    fn spotlight_overlay_requires_navigation_mode() {
+        assert!(!spotlight_overlay_should_show(false, false));
+        assert!(!spotlight_overlay_should_show(true, true));
     }
 }
 

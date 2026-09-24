@@ -26,11 +26,12 @@ use wayland_protocols_wlr::{
 use xkbcommon::xkb;
 
 use crate::{
-    config::{CloseKey, Config},
+    config::{CloseKey, Config, close_key_label},
     error::{AppError, Result},
     output::{OutputState, output_matches_filter},
-    render::TEXT_GLYPH_HEIGHT,
+    render::{TEXT_GLYPH_ADVANCE, TEXT_GLYPH_HEIGHT},
     window::WindowState,
+    zoom::Point,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -72,7 +73,7 @@ impl InteractionMode {
                             "OTHER",
                             format!(
                                 "S save  Ctrl+C  ? help  {} close",
-                                close_key.map(CloseKey::label).unwrap_or("Esc")
+                                close_key_label(close_key)
                             ),
                             0xFFF4_F4F4,
                         ),
@@ -157,25 +158,21 @@ pub const DEFAULT_TEXT_ANNOTATION_SCALE: usize = 4;
 pub const MIN_TEXT_ANNOTATION_SCALE: usize = 1;
 pub const MAX_TEXT_ANNOTATION_SCALE: usize = 12;
 const HIGHLIGHTER_ALPHA: u32 = 0x88;
+pub const REPEAT_INTERVAL: Duration = Duration::from_millis(50);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PaletteColor {
-    pub value: u32,
-}
-
-pub const ANNOTATION_COLOR_PALETTE: [PaletteColor; 12] = [
-    PaletteColor { value: 0xFFFF_4F5E },
-    PaletteColor { value: 0xFFFF_8A3D },
-    PaletteColor { value: 0xFFFF_C83D },
-    PaletteColor { value: 0xFFE7_E247 },
-    PaletteColor { value: 0xFF48_C78E },
-    PaletteColor { value: 0xFF17_BF9A },
-    PaletteColor { value: 0xFF35_B9FF },
-    PaletteColor { value: 0xFF5B_8DEF },
-    PaletteColor { value: 0xFF6F_6BFF },
-    PaletteColor { value: 0xFFB0_5BFF },
-    PaletteColor { value: 0xFFFF_FFFF },
-    PaletteColor { value: 0xFF20_2020 },
+pub const ANNOTATION_COLOR_PALETTE: [u32; 12] = [
+    0xFFFF_4F5E,
+    0xFFFF_8A3D,
+    0xFFFF_C83D,
+    0xFFE7_E247,
+    0xFF48_C78E,
+    0xFF17_BF9A,
+    0xFF35_B9FF,
+    0xFF5B_8DEF,
+    0xFF6F_6BFF,
+    0xFFB0_5BFF,
+    0xFFFF_FFFF,
+    0xFF20_2020,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -245,6 +242,15 @@ impl AnnotationPoint {
     }
 }
 
+impl From<AnnotationPoint> for Point {
+    fn from(point: AnnotationPoint) -> Self {
+        Self {
+            x: f64::from(point.x),
+            y: f64::from(point.y),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotationShapeKind {
     Line,
@@ -290,47 +296,50 @@ pub struct ActiveMove {
 }
 
 impl StrokeAnnotation {
-    pub fn recolor(&mut self, palette_color: u32) {
-        self.color = recolor_annotation_color(self.color, palette_color);
+    fn map_points(&mut self, f: impl Fn(AnnotationPoint) -> AnnotationPoint) {
+        for point in &mut self.points {
+            *point = f(*point);
+        }
     }
 }
 
 impl ShapeAnnotation {
-    pub fn recolor(&mut self, palette_color: u32) {
-        self.color = recolor_annotation_color(self.color, palette_color);
+    fn map_points(&mut self, f: impl Fn(AnnotationPoint) -> AnnotationPoint) {
+        self.start = f(self.start);
+        self.end = f(self.end);
     }
 }
 
 impl TextAnnotation {
     pub fn recolor(&mut self, palette_color: u32) {
-        self.color = recolor_annotation_color(self.color, palette_color);
+        recolor(&mut self.color, palette_color);
+    }
+
+    pub fn map_points(&mut self, f: impl Fn(AnnotationPoint) -> AnnotationPoint) {
+        self.position = f(self.position);
     }
 }
 
 impl AnnotationItem {
     pub fn recolor(&mut self, palette_color: u32) {
+        let color = match self {
+            Self::Stroke(stroke) => &mut stroke.color,
+            Self::Shape(shape) => &mut shape.color,
+            Self::Text(text) => &mut text.color,
+        };
+        recolor(color, palette_color);
+    }
+
+    pub fn map_points(&mut self, f: impl Fn(AnnotationPoint) -> AnnotationPoint) {
         match self {
-            Self::Stroke(stroke) => stroke.recolor(palette_color),
-            Self::Shape(shape) => shape.recolor(palette_color),
-            Self::Text(text) => text.recolor(palette_color),
+            Self::Stroke(stroke) => stroke.map_points(f),
+            Self::Shape(shape) => shape.map_points(f),
+            Self::Text(text) => text.map_points(f),
         }
     }
 
     pub fn translate(&mut self, dx: i32, dy: i32) {
-        match self {
-            Self::Stroke(stroke) => {
-                for point in &mut stroke.points {
-                    *point = point.offset(dx, dy);
-                }
-            }
-            Self::Shape(shape) => {
-                shape.start = shape.start.offset(dx, dy);
-                shape.end = shape.end.offset(dx, dy);
-            }
-            Self::Text(text) => {
-                text.position = text.position.offset(dx, dy);
-            }
-        }
+        self.map_points(|point| point.offset(dx, dy));
     }
 
     pub fn hit_test(&self, point: AnnotationPoint, tolerance: f64) -> bool {
@@ -380,9 +389,17 @@ impl ActiveAnnotation {
     }
 
     pub fn recolor(&mut self, palette_color: u32) {
+        let color = match self {
+            Self::Stroke(stroke) => &mut stroke.color,
+            Self::Shape(shape) => &mut shape.color,
+        };
+        recolor(color, palette_color);
+    }
+
+    pub fn map_points(&mut self, f: impl Fn(AnnotationPoint) -> AnnotationPoint) {
         match self {
-            Self::Stroke(stroke) => stroke.recolor(palette_color),
-            Self::Shape(shape) => shape.recolor(palette_color),
+            Self::Stroke(stroke) => stroke.map_points(f),
+            Self::Shape(shape) => shape.map_points(f),
         }
     }
 
@@ -397,13 +414,13 @@ impl ActiveAnnotation {
     }
 }
 
-fn recolor_annotation_color(current_color: u32, palette_color: u32) -> u32 {
-    let alpha = current_color >> 24;
-    if alpha == 0xFF {
+fn recolor(color: &mut u32, palette_color: u32) {
+    let alpha = *color >> 24;
+    *color = if alpha == 0xFF {
         palette_color
     } else {
         premultiply_alpha(palette_color, alpha)
-    }
+    };
 }
 
 fn stroke_hit_test(stroke: &StrokeAnnotation, point: AnnotationPoint, tolerance: f64) -> bool {
@@ -437,9 +454,9 @@ fn text_hit_test(text: &TextAnnotation, point: AnnotationPoint, tolerance: f64) 
     let width = if text.text.is_empty() {
         2
     } else {
-        (text.text.chars().count() as i32 * 6 * scale).max(2)
+        (text.text.chars().count() as i32 * TEXT_GLYPH_ADVANCE as i32 * scale).max(2)
     };
-    let height = 7 * scale;
+    let height = TEXT_GLYPH_HEIGHT as i32 * scale;
     let tolerance = tolerance.ceil() as i32;
     let left = text.position.x - tolerance;
     let top = text.position.y - tolerance;
@@ -490,38 +507,26 @@ fn point_near_rectangle(
     end: AnnotationPoint,
     tolerance: f64,
 ) -> bool {
-    let left = start.x.min(end.x);
-    let right = start.x.max(end.x);
-    let top = start.y.min(end.y);
-    let bottom = start.y.max(end.y);
+    let (left, right) = (start.x.min(end.x), start.x.max(end.x));
+    let (top, bottom) = (start.y.min(end.y), start.y.max(end.y));
+    let corners = [
+        AnnotationPoint { x: left, y: top },
+        AnnotationPoint { x: right, y: top },
+        AnnotationPoint {
+            x: right,
+            y: bottom,
+        },
+        AnnotationPoint { x: left, y: bottom },
+    ];
 
-    point_near_segment(
-        point,
-        AnnotationPoint { x: left, y: top },
-        AnnotationPoint { x: right, y: top },
-        tolerance,
-    ) || point_near_segment(
-        point,
-        AnnotationPoint { x: right, y: top },
-        AnnotationPoint {
-            x: right,
-            y: bottom,
-        },
-        tolerance,
-    ) || point_near_segment(
-        point,
-        AnnotationPoint {
-            x: right,
-            y: bottom,
-        },
-        AnnotationPoint { x: left, y: bottom },
-        tolerance,
-    ) || point_near_segment(
-        point,
-        AnnotationPoint { x: left, y: bottom },
-        AnnotationPoint { x: left, y: top },
-        tolerance,
-    )
+    (0..corners.len()).any(|i| {
+        point_near_segment(
+            point,
+            corners[i],
+            corners[(i + 1) % corners.len()],
+            tolerance,
+        )
+    })
 }
 
 fn point_near_ellipse(
@@ -624,8 +629,9 @@ pub struct AppState {
     pub focused_window: Option<u32>,
     pub loop_signal: Option<LoopSignal>,
     pub fatal_error: Option<AppError>,
-    pub clipboard_selection: Option<ClipboardSelection>,
-    pub primary_selection: Option<PrimarySelection>,
+    pub clipboard_selection: Option<Selection<wl_data_source::WlDataSource>>,
+    pub primary_selection:
+        Option<Selection<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1>>,
     pub toast: Option<ToastState>,
     pub spotlight_enabled: bool,
     pub spotlight_radius_frac: f64,
@@ -639,7 +645,6 @@ pub struct AppState {
     pub keyboard_text: Option<KeyboardTextState>,
     pub repeat_key: Option<u32>,
     pub repeat_deadline: Option<Instant>,
-    pub repeat_interval: Duration,
 }
 
 pub struct KeyboardTextState {
@@ -649,15 +654,9 @@ pub struct KeyboardTextState {
     pub compose: Option<xkb::compose::State>,
 }
 
-pub struct ClipboardSelection {
-    pub source: wl_data_source::WlDataSource,
-    pub mime_types: Vec<&'static str>,
-    pub data: Vec<u8>,
-}
-
-pub struct PrimarySelection {
-    pub source: zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
-    pub mime_types: Vec<&'static str>,
+pub struct Selection<S> {
+    pub source: S,
+    pub mime_types: &'static [&'static str],
     pub data: Vec<u8>,
 }
 
@@ -694,7 +693,6 @@ impl AppState {
             keyboard_text: None,
             repeat_key: None,
             repeat_deadline: None,
-            repeat_interval: Duration::from_millis(50),
         }
     }
 
@@ -730,6 +728,10 @@ impl AppState {
             .collect())
     }
 
+    pub fn window_ids(&self) -> Vec<u32> {
+        self.windows.keys().copied().collect()
+    }
+
     pub fn request_exit(&self) {
         if let Some(loop_signal) = &self.loop_signal {
             loop_signal.stop();
@@ -757,11 +759,7 @@ impl AppState {
     }
 
     pub fn selected_palette_color(&self) -> u32 {
-        ANNOTATION_COLOR_PALETTE
-            .get(self.annotation_color_index)
-            .copied()
-            .unwrap_or(ANNOTATION_COLOR_PALETTE[0])
-            .value
+        ANNOTATION_COLOR_PALETTE[self.annotation_color_index]
     }
 
     pub fn annotation_color_for(&self, tool: AnnotationTool) -> u32 {
@@ -805,7 +803,7 @@ fn premultiply_alpha(color: u32, alpha: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{APP_ID, CloseKey, Config};
+    use crate::config::{CloseKey, test_config};
 
     use super::{
         ANNOTATION_COLOR_PALETTE, ActiveAnnotation, AnnotationItem, AnnotationPoint,
@@ -813,19 +811,6 @@ mod tests {
         MAX_TEXT_ANNOTATION_SCALE, ShapeAnnotation, StrokeAnnotation, TextAnnotation,
         premultiply_alpha,
     };
-
-    fn test_config() -> Config {
-        Config {
-            app_id: APP_ID,
-            close_key: None,
-            initial_zoom: 0.0,
-            output_filter: None,
-            invert_scroll: false,
-            spotlight: false,
-            screenshot_dir: "shots".into(),
-            show_indicator: true,
-        }
-    }
 
     #[test]
     fn annotation_item_translate_moves_shape_points() {
@@ -871,7 +856,7 @@ mod tests {
 
     #[test]
     fn annotation_item_recolor_preserves_existing_alpha() {
-        let original = premultiply_alpha(ANNOTATION_COLOR_PALETTE[4].value, HIGHLIGHTER_ALPHA);
+        let original = premultiply_alpha(ANNOTATION_COLOR_PALETTE[4], HIGHLIGHTER_ALPHA);
         let mut annotation = AnnotationItem::Stroke(StrokeAnnotation {
             points: vec![
                 AnnotationPoint { x: 10, y: 10 },
@@ -881,14 +866,14 @@ mod tests {
             width: AnnotationTool::Highlighter.stroke_width(),
         });
 
-        annotation.recolor(ANNOTATION_COLOR_PALETTE[1].value);
+        annotation.recolor(ANNOTATION_COLOR_PALETTE[1]);
 
         let AnnotationItem::Stroke(stroke) = annotation else {
             panic!("stroke annotation expected");
         };
         assert_eq!(
             stroke.color,
-            premultiply_alpha(ANNOTATION_COLOR_PALETTE[1].value, HIGHLIGHTER_ALPHA)
+            premultiply_alpha(ANNOTATION_COLOR_PALETTE[1], HIGHLIGHTER_ALPHA)
         );
     }
 
@@ -897,15 +882,15 @@ mod tests {
         let mut annotation = ActiveAnnotation::new(
             AnnotationTool::Rectangle,
             AnnotationPoint { x: 20, y: 30 },
-            ANNOTATION_COLOR_PALETTE[0].value,
+            ANNOTATION_COLOR_PALETTE[0],
         );
 
-        annotation.recolor(ANNOTATION_COLOR_PALETTE[3].value);
+        annotation.recolor(ANNOTATION_COLOR_PALETTE[3]);
 
         let ActiveAnnotation::Shape(shape) = annotation else {
             panic!("shape annotation expected");
         };
-        assert_eq!(shape.color, ANNOTATION_COLOR_PALETTE[3].value);
+        assert_eq!(shape.color, ANNOTATION_COLOR_PALETTE[3]);
     }
 
     #[test]
@@ -924,7 +909,7 @@ mod tests {
     fn navigate_badge_shows_draw_modes() {
         let badge = InteractionMode::Navigate.badge(
             AnnotationTool::Pen,
-            ANNOTATION_COLOR_PALETTE[0].value,
+            ANNOTATION_COLOR_PALETTE[0],
             4,
             None,
             None,
@@ -939,7 +924,7 @@ mod tests {
     fn navigate_badge_reflects_remapped_close_key() {
         let badge = InteractionMode::Navigate.badge(
             AnnotationTool::Pen,
-            ANNOTATION_COLOR_PALETTE[0].value,
+            ANNOTATION_COLOR_PALETTE[0],
             4,
             Some(CloseKey::Q),
             None,
@@ -952,7 +937,7 @@ mod tests {
     fn annotate_badge_keeps_escape_visible() {
         let badge = InteractionMode::AnnotateZoomed.badge(
             AnnotationTool::Pen,
-            ANNOTATION_COLOR_PALETTE[0].value,
+            ANNOTATION_COLOR_PALETTE[0],
             4,
             None,
             None,

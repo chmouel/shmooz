@@ -1,6 +1,6 @@
 use bytemuck::cast_slice_mut;
 
-use crate::config::CloseKey;
+use crate::config::{CloseKey, close_key_label};
 use crate::state::{
     ActiveAnnotation, AnnotationItem, AnnotationPoint, AnnotationShapeKind, BadgeModel,
     ShapeAnnotation, StrokeAnnotation, TextAnnotation,
@@ -12,13 +12,12 @@ const BADGE_HINT_SCALE: usize = 2;
 const TOAST_TITLE_SCALE: usize = 2;
 const TOAST_TEXT_SCALE: usize = 1;
 pub(crate) const TEXT_GLYPH_HEIGHT: usize = 7;
+pub(crate) const TEXT_GLYPH_ADVANCE: usize = 6;
 
-const SPOTLIGHT_DIM_COLOR: u32 = 0xAA00_0000;
-const SHIFT_SELECT_FILL_COLOR: u32 = 0x253B_82F6;
-const SHIFT_SELECT_BORDER_COLOR: u32 = 0xCC3B_82F6;
-const CARD_BG_COLOR: u32 = 0xEB13_1316;
-const CARD_BORDER_COLOR: u32 = 0x2CFF_FFFF;
-const DIVIDER_COLOR: u32 = 0x1AFF_FFFF;
+const CARD_RADIUS: f32 = 12.0;
+const CARD_BACKGROUND: u32 = 0xEB13_1316;
+const CARD_BORDER: u32 = 0x2CFF_FFFF;
+const CARD_DIVIDER: u32 = 0x1AFF_FFFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorStyle {
@@ -32,48 +31,20 @@ pub struct OverlayCursor {
     pub style: CursorStyle,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn fill_rect(
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-    rect_width: usize,
-    rect_height: usize,
-    color: u32,
-) {
-    fill_rect_pixels(
-        pixels_u32(pixels),
-        width,
-        height,
-        x,
-        y,
-        rect_width,
-        rect_height,
-        color,
-    );
+/// Annotation overlay content, already projected into screen coordinates.
+#[derive(Debug, Default)]
+pub struct AnnotationScene {
+    pub annotations: Vec<AnnotationItem>,
+    pub active_annotation: Option<ActiveAnnotation>,
+    pub active_text: Option<TextAnnotation>,
+    pub cursor: Option<OverlayCursor>,
+    pub shift_select_rect: Option<(AnnotationPoint, AnnotationPoint)>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fill_rect_pixels(
-    pixels: &mut [u32],
+struct Canvas<'a> {
+    pixels: &'a mut [u32],
     width: usize,
     height: usize,
-    x: usize,
-    y: usize,
-    rect_width: usize,
-    rect_height: usize,
-    color: u32,
-) {
-    let x0 = x.min(width);
-    let y0 = y.min(height);
-    let x1 = x.saturating_add(rect_width).min(width);
-    let y1 = y.saturating_add(rect_height).min(height);
-
-    for yy in y0..y1 {
-        pixels[yy * width + x0..yy * width + x1].fill(color);
-    }
 }
 
 pub fn draw_spotlight_overlay(
@@ -84,11 +55,11 @@ pub fn draw_spotlight_overlay(
     center_y: usize,
     radius: f64,
 ) {
-    let pixels = pixels_u32(pixels);
+    let pixels: &mut [u32] = cast_slice_mut(pixels);
     let radius_sq = radius * radius;
     let center_x = center_x.min(width.saturating_sub(1)) as i32;
     let center_y = center_y.min(height.saturating_sub(1)) as i32;
-    let dim = SPOTLIGHT_DIM_COLOR;
+    let dim = 0xAA00_0000;
 
     for y in 0..height {
         let row = &mut pixels[y * width..(y + 1) * width];
@@ -109,272 +80,69 @@ pub fn draw_spotlight_overlay(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn blend_rect(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-) {
-    let left = x0.min(x1).max(0) as usize;
-    let right = x0.max(x1).min(width as i32) as usize;
-    let top = y0.min(y1).max(0) as usize;
-    let bottom = y0.max(y1).min(height as i32) as usize;
-
-    for yy in top..bottom {
-        let row_offset = yy * width;
-        for xx in left..right {
-            let index = row_offset + xx;
-            pixels[index] = alpha_over(pixels[index], color);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub fn draw_annotation_overlay(
     pixels: &mut [u8],
     width: usize,
     height: usize,
-    annotations: &[AnnotationItem],
-    active_annotation: Option<&ActiveAnnotation>,
-    active_text: Option<&TextAnnotation>,
-    cursor: Option<OverlayCursor>,
-    shift_select_rect: Option<(AnnotationPoint, AnnotationPoint)>,
+    scene: &AnnotationScene,
 ) {
-    let pixels = pixels_u32(pixels);
-    pixels.fill(0);
+    let mut canvas = Canvas::new(pixels, width, height);
+    canvas.pixels.fill(0);
 
-    for annotation in annotations {
-        draw_annotation_item(pixels, width, height, annotation);
-    }
-
-    if let Some(active_annotation) = active_annotation {
-        match active_annotation {
-            ActiveAnnotation::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
-            ActiveAnnotation::Shape(shape) => draw_shape(pixels, width, height, shape),
+    for annotation in &scene.annotations {
+        match annotation {
+            AnnotationItem::Stroke(stroke) => canvas.draw_stroke(stroke),
+            AnnotationItem::Shape(shape) => canvas.draw_shape(shape),
+            AnnotationItem::Text(text) => canvas.draw_text_annotation(text),
         }
     }
 
-    if let Some(active_text) = active_text {
-        draw_text_annotation(pixels, width, height, active_text);
+    match &scene.active_annotation {
+        Some(ActiveAnnotation::Stroke(stroke)) => canvas.draw_stroke(stroke),
+        Some(ActiveAnnotation::Shape(shape)) => canvas.draw_shape(shape),
+        None => {}
     }
 
-    if let Some((start, end)) = shift_select_rect {
-        blend_rect(
-            pixels,
-            width,
-            height,
-            start.x,
-            start.y,
-            end.x,
-            end.y,
-            SHIFT_SELECT_FILL_COLOR,
-        );
-        draw_rectangle(
-            pixels,
-            width,
-            height,
-            start.x,
-            start.y,
-            end.x,
-            end.y,
-            SHIFT_SELECT_BORDER_COLOR,
-            1,
-        );
+    if let Some(active_text) = &scene.active_text {
+        canvas.draw_text_annotation(active_text);
     }
 
-    if let Some(cursor) = cursor {
-        draw_cursor_marker(pixels, width, height, cursor);
+    if let Some((start, end)) = scene.shift_select_rect {
+        canvas.blend_rect(start.x, start.y, end.x, end.y, 0x253B_82F6);
+        canvas.draw_rectangle(start, end, 0xCC3B_82F6, 1);
     }
-}
 
-fn paint_rounded_card_background(
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    top_accent_color: Option<u32>,
-) {
-    let pixels = pixels_u32(pixels);
-    let r = 12.0f32;
-    let bg_color = CARD_BG_COLOR;
-    let border_color = CARD_BORDER_COLOR;
-
-    for y in 0..height {
-        let row_offset = y * width;
-        for x in 0..width {
-            let cx = (x as f32).clamp(r, width as f32 - 1.0 - r);
-            let cy = (y as f32).clamp(r, height as f32 - 1.0 - r);
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let d = (dx * dx + dy * dy).sqrt();
-
-            if d <= r + 0.5 {
-                let alpha_scale = (r + 0.5 - d).clamp(0.0, 1.0);
-                let border_alpha = (1.0 - (d - (r - 0.5)).abs()).clamp(0.0, 1.0);
-
-                let pixel_bg = bg_color;
-                let mut blended_color = if border_alpha > 0.0 {
-                    let b_alpha = ((border_color >> 24) & 0xFF) as f32 * border_alpha;
-                    let b_color = (border_color & 0x00FF_FFFF) | (((b_alpha as u32) & 0xFF) << 24);
-                    alpha_over(pixel_bg, b_color)
-                } else {
-                    pixel_bg
-                };
-
-                if let Some(accent) = top_accent_color.filter(|_| y < 3) {
-                    blended_color = alpha_over(blended_color, accent);
-                }
-
-                let final_a = (((blended_color >> 24) & 0xFF) as f32 * alpha_scale) as u32;
-                let final_pixel = (blended_color & 0x00FF_FFFF) | (final_a << 24);
-
-                pixels[row_offset + x] = final_pixel;
-            } else {
-                pixels[row_offset + x] = 0;
-            }
+    if let Some(cursor) = scene.cursor {
+        match cursor.style {
+            CursorStyle::Crosshair => canvas.draw_crosshair_cursor(cursor.position),
+            CursorStyle::Hand => canvas.draw_hand_cursor(cursor.position),
         }
     }
-}
-
-fn paint_badge_background(pixels: &mut [u8], width: usize, height: usize) {
-    paint_rounded_card_background(pixels, width, height, Some(0xFFFF_C83D));
 }
 
 pub fn paint_zoom_badge(pixels: &mut [u8], width: usize, height: usize, badge: &BadgeModel) {
-    pixels_u32(pixels).fill(0);
+    let mut canvas = Canvas::new(pixels, width, height);
+    canvas.paint_card(Some(0xFFFF_C83D));
+    for y in [52, 80, 104] {
+        canvas.draw_divider(y);
+    }
 
-    paint_badge_background(pixels, width, height);
-
-    let px_u32 = pixels_u32(pixels);
-    blend_rect(
-        px_u32,
-        width,
-        height,
-        18,
-        52,
-        width.saturating_sub(18) as i32,
-        53,
-        DIVIDER_COLOR,
-    );
-    blend_rect(
-        px_u32,
-        width,
-        height,
-        18,
-        80,
-        width.saturating_sub(18) as i32,
-        81,
-        DIVIDER_COLOR,
-    );
-    blend_rect(
-        px_u32,
-        width,
-        height,
-        18,
-        104,
-        width.saturating_sub(18) as i32,
-        105,
-        DIVIDER_COLOR,
-    );
-
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        12,
-        &badge.title,
-        BADGE_TITLE_SCALE,
-        0xFFFF_FFFF,
-    );
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        34,
-        &badge.subtitle,
-        BADGE_SUBTITLE_SCALE,
-        0xFF9C_A3AF,
-    );
-
-    let row_y = [60, 84, 108];
-    for (index, line) in badge.lines.iter().enumerate() {
-        let y = row_y[index];
-        draw_label(
-            pixels,
-            width,
-            height,
-            18,
-            y,
-            line.label,
-            BADGE_HINT_SCALE,
-            0xFFFF_C83D,
-        );
-        draw_label(
-            pixels,
-            width,
-            height,
-            88,
-            y,
-            &line.text,
-            BADGE_HINT_SCALE,
-            line.color,
-        );
+    canvas.draw_label(18, 12, &badge.title, BADGE_TITLE_SCALE, 0xFFFF_FFFF);
+    canvas.draw_label(18, 34, &badge.subtitle, BADGE_SUBTITLE_SCALE, 0xFF9C_A3AF);
+    for (line, y) in badge.lines.iter().zip([60, 84, 108]) {
+        canvas.draw_label(18, y, line.label, BADGE_HINT_SCALE, 0xFFFF_C83D);
+        canvas.draw_label(88, y, &line.text, BADGE_HINT_SCALE, line.color);
     }
 }
 
 pub fn paint_toast(pixels: &mut [u8], width: usize, height: usize, title: &str, message: &str) {
-    pixels_u32(pixels).fill(0);
+    let mut canvas = Canvas::new(pixels, width, height);
+    canvas.paint_card(Some(0xFFFF_C83D));
+    canvas.draw_divider(54);
 
-    paint_badge_background(pixels, width, height);
-
-    let px_u32 = pixels_u32(pixels);
-    blend_rect(
-        px_u32,
-        width,
-        height,
-        18,
-        54,
-        width.saturating_sub(18) as i32,
-        55,
-        DIVIDER_COLOR,
-    );
-
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        16,
-        title,
-        TOAST_TITLE_SCALE,
-        0xFFFF_FFFF,
-    );
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        40,
-        "NOTIFICATION",
-        TOAST_TEXT_SCALE,
-        0xFF9C_A3AF,
-    );
-    draw_label(
-        pixels,
-        width,
-        height,
-        18,
-        68,
-        message,
-        TOAST_TEXT_SCALE,
-        0xFFFF_FFFF,
-    );
+    canvas.draw_label(18, 16, title, TOAST_TITLE_SCALE, 0xFFFF_FFFF);
+    canvas.draw_label(18, 40, "NOTIFICATION", TOAST_TEXT_SCALE, 0xFF9C_A3AF);
+    canvas.draw_label(18, 68, message, TOAST_TEXT_SCALE, 0xFFFF_FFFF);
 }
 
 pub fn paint_color_picker(
@@ -385,479 +153,360 @@ pub fn paint_color_picker(
     hex: &str,
     copied: bool,
 ) {
-    pixels_u32(pixels).fill(0);
-
+    let mut canvas = Canvas::new(pixels, width, height);
     let color = 0xFF00_0000 | (color & 0x00FF_FFFF);
-    paint_rounded_card_background(pixels, width, height, Some(color));
+    canvas.paint_card(Some(color));
 
-    fill_rect(pixels, width, height, 18, 32, 86, 62, 0xFFFF_FFFF);
-    fill_rect(pixels, width, height, 21, 35, 80, 56, color);
+    canvas.fill_rect(18, 32, 86, 62, 0xFFFF_FFFF);
+    canvas.fill_rect(21, 35, 80, 56, color);
 
-    draw_label(pixels, width, height, 122, 26, "COLOR", 2, 0xFF9C_A3AF);
-    draw_label(pixels, width, height, 122, 50, hex, 3, 0xFFFF_FFFF);
+    canvas.draw_label(122, 26, "COLOR", 2, 0xFF9C_A3AF);
+    canvas.draw_label(122, 50, hex, 3, 0xFFFF_FFFF);
     if copied {
-        draw_label(pixels, width, height, 122, 82, "COPIED", 1, 0xFFFF_C83D);
+        canvas.draw_label(122, 82, "COPIED", 1, 0xFFFF_C83D);
     }
 }
 
-fn draw_annotation_item(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    annotation: &AnnotationItem,
-) {
-    match annotation {
-        AnnotationItem::Stroke(stroke) => draw_stroke(pixels, width, height, stroke),
-        AnnotationItem::Shape(shape) => draw_shape(pixels, width, height, shape),
-        AnnotationItem::Text(text) => draw_text_annotation(pixels, width, height, text),
+/// Color of the rounded card at (x, y) for a card of the given size, or None
+/// outside its corners. `accent` tints the top three rows.
+fn card_pixel(x: usize, y: usize, width: usize, height: usize, accent: Option<u32>) -> Option<u32> {
+    let r = CARD_RADIUS;
+    let cx = (x as f32).clamp(r, width as f32 - 1.0 - r);
+    let cy = (y as f32).clamp(r, height as f32 - 1.0 - r);
+    let dx = x as f32 - cx;
+    let dy = y as f32 - cy;
+    let d = (dx * dx + dy * dy).sqrt();
+    if d > r + 0.5 {
+        return None;
     }
+
+    let alpha_scale = (r + 0.5 - d).clamp(0.0, 1.0);
+    let border_alpha = (1.0 - (d - (r - 0.5)).abs()).clamp(0.0, 1.0);
+
+    let mut color = if border_alpha > 0.0 {
+        let b_alpha = ((CARD_BORDER >> 24) & 0xFF) as f32 * border_alpha;
+        let b_color = (CARD_BORDER & 0x00FF_FFFF) | (((b_alpha as u32) & 0xFF) << 24);
+        alpha_over(CARD_BACKGROUND, b_color)
+    } else {
+        CARD_BACKGROUND
+    };
+
+    if let Some(accent) = accent.filter(|_| y < 3) {
+        color = alpha_over(color, accent);
+    }
+
+    let final_a = (((color >> 24) & 0xFF) as f32 * alpha_scale) as u32;
+    Some((color & 0x00FF_FFFF) | (final_a << 24))
 }
 
-fn draw_stroke(pixels: &mut [u32], width: usize, height: usize, stroke: &StrokeAnnotation) {
-    if stroke.points.len() == 1 {
-        let point = stroke.points[0];
-        draw_disc(
-            pixels,
+impl<'a> Canvas<'a> {
+    fn new(pixels: &'a mut [u8], width: usize, height: usize) -> Self {
+        Self {
+            pixels: cast_slice_mut(pixels),
             width,
             height,
-            point.x,
-            point.y,
-            (stroke.width.max(1) as i32) / 2,
-            stroke.color,
-        );
-        return;
+        }
     }
 
-    for segment in stroke.points.windows(2) {
-        let start = segment[0];
-        let end = segment[1];
-        draw_line(
-            pixels,
-            width,
-            height,
-            start.x,
-            start.y,
-            end.x,
-            end.y,
-            stroke.color,
-            stroke.width.max(1) as i32,
-        );
-    }
-}
-
-fn draw_shape(pixels: &mut [u32], width: usize, height: usize, shape: &ShapeAnnotation) {
-    match shape.kind {
-        AnnotationShapeKind::Line => draw_line(
-            pixels,
-            width,
-            height,
-            shape.start.x,
-            shape.start.y,
-            shape.end.x,
-            shape.end.y,
-            shape.color,
-            shape.width.max(1) as i32,
-        ),
-        AnnotationShapeKind::Rectangle => draw_rectangle(
-            pixels,
-            width,
-            height,
-            shape.start.x,
-            shape.start.y,
-            shape.end.x,
-            shape.end.y,
-            shape.color,
-            shape.width.max(1) as i32,
-        ),
-        AnnotationShapeKind::Ellipse => draw_ellipse(
-            pixels,
-            width,
-            height,
-            shape.start.x,
-            shape.start.y,
-            shape.end.x,
-            shape.end.y,
-            shape.color,
-            shape.width.max(1) as i32,
-        ),
-    }
-}
-
-fn draw_cursor_marker(pixels: &mut [u32], width: usize, height: usize, cursor: OverlayCursor) {
-    match cursor.style {
-        CursorStyle::Crosshair => draw_crosshair_cursor(pixels, width, height, cursor.position),
-        CursorStyle::Hand => draw_hand_cursor(pixels, width, height, cursor.position),
-    }
-}
-
-fn draw_crosshair_cursor(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
-    draw_line(
-        pixels,
-        width,
-        height,
-        cursor.x - 12,
-        cursor.y,
-        cursor.x + 12,
-        cursor.y,
-        0xFF00_0000,
-        5,
-    );
-    draw_line(
-        pixels,
-        width,
-        height,
-        cursor.x,
-        cursor.y - 12,
-        cursor.x,
-        cursor.y + 12,
-        0xFF00_0000,
-        5,
-    );
-    draw_line(
-        pixels,
-        width,
-        height,
-        cursor.x - 12,
-        cursor.y,
-        cursor.x + 12,
-        cursor.y,
-        0xFFFF_FFFF,
-        2,
-    );
-    draw_line(
-        pixels,
-        width,
-        height,
-        cursor.x,
-        cursor.y - 12,
-        cursor.x,
-        cursor.y + 12,
-        0xFFFF_FFFF,
-        2,
-    );
-    draw_disc(pixels, width, height, cursor.x, cursor.y, 4, 0xFFFF_C83D);
-}
-
-fn draw_hand_cursor(pixels: &mut [u32], width: usize, height: usize, cursor: AnnotationPoint) {
-    const OUTLINE: u32 = 0xFF00_0000;
-    const FILL: u32 = 0xFFFF_FFFF;
-    const ACCENT: u32 = 0xFFFF_C83D;
-
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x - 2,
-        cursor.y,
-        5,
-        13,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x + 2,
-        cursor.y + 3,
-        4,
-        11,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x + 5,
-        cursor.y + 5,
-        4,
-        10,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x + 8,
-        cursor.y + 7,
-        4,
-        8,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x - 2,
-        cursor.y + 12,
-        14,
-        10,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x - 8,
-        cursor.y + 12,
-        7,
-        5,
-        OUTLINE,
-        FILL,
-    );
-    draw_box(
-        pixels,
-        width,
-        height,
-        cursor.x - 10,
-        cursor.y + 15,
-        8,
-        5,
-        OUTLINE,
-        FILL,
-    );
-    fill_rect_i32(
-        pixels,
-        width,
-        height,
-        cursor.x + 1,
-        cursor.y + 15,
-        6,
-        3,
-        ACCENT,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_box(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    y: i32,
-    box_width: usize,
-    box_height: usize,
-    outline: u32,
-    fill: u32,
-) {
-    fill_rect_i32(pixels, width, height, x, y, box_width, box_height, outline);
-    if box_width > 2 && box_height > 2 {
-        fill_rect_i32(
-            pixels,
-            width,
-            height,
-            x + 1,
-            y + 1,
-            box_width - 2,
-            box_height - 2,
-            fill,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn fill_rect_i32(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    y: i32,
-    rect_width: usize,
-    rect_height: usize,
-    color: u32,
-) {
-    let x0 = x.max(0) as usize;
-    let y0 = y.max(0) as usize;
-    let x1 = x.saturating_add(rect_width as i32).max(0) as usize;
-    let y1 = y.saturating_add(rect_height as i32).max(0) as usize;
-    fill_rect_pixels(
-        pixels,
-        width,
-        height,
-        x0.min(width),
-        y0.min(height),
-        x1.saturating_sub(x0)
-            .min(width.saturating_sub(x0.min(width))),
-        y1.saturating_sub(y0)
-            .min(height.saturating_sub(y0.min(height))),
-        color,
-    );
-}
-
-fn draw_text_annotation(pixels: &mut [u32], width: usize, height: usize, text: &TextAnnotation) {
-    if text.text.is_empty() {
-        fill_rect_pixels(
-            pixels,
-            width,
-            height,
-            text.position.x.max(0) as usize,
-            text.position.y.max(0) as usize,
-            2,
-            TEXT_GLYPH_HEIGHT * text.scale.max(1),
-            0xFFFF_C83D,
-        );
-        return;
-    }
-
-    draw_label_pixels(
-        pixels,
-        width,
-        height,
-        text.position.x + 2,
-        text.position.y + 2,
-        &text.text,
-        text.scale.max(1),
-        0xC000_0000,
-    );
-    draw_label_pixels(
-        pixels,
-        width,
-        height,
-        text.position.x,
-        text.position.y,
-        &text.text,
-        text.scale.max(1),
-        text.color,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_line(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-    thickness: i32,
-) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let steps = dx.abs().max(dy.abs()).max(1);
-    let radius = thickness.max(1) / 2;
-
-    for step in 0..=steps {
-        let t = step as f64 / steps as f64;
-        let x = x0 as f64 + dx as f64 * t;
-        let y = y0 as f64 + dy as f64 * t;
-        draw_disc(
-            pixels,
-            width,
-            height,
-            x.round() as i32,
-            y.round() as i32,
-            radius,
-            color,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_rectangle(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-    thickness: i32,
-) {
-    let left = x0.min(x1);
-    let right = x0.max(x1);
-    let top = y0.min(y1);
-    let bottom = y0.max(y1);
-
-    draw_line(
-        pixels, width, height, left, top, right, top, color, thickness,
-    );
-    draw_line(
-        pixels, width, height, right, top, right, bottom, color, thickness,
-    );
-    draw_line(
-        pixels, width, height, right, bottom, left, bottom, color, thickness,
-    );
-    draw_line(
-        pixels, width, height, left, bottom, left, top, color, thickness,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_ellipse(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: u32,
-    thickness: i32,
-) {
-    let left = x0.min(x1) as f64;
-    let right = x0.max(x1) as f64;
-    let top = y0.min(y1) as f64;
-    let bottom = y0.max(y1) as f64;
-    let rx = ((right - left) / 2.0).max(1.0);
-    let ry = ((bottom - top) / 2.0).max(1.0);
-    let cx = left + rx;
-    let cy = top + ry;
-    let step_count = ((rx + ry) * 3.0).round() as i32;
-    let step_count = step_count.max(24);
-
-    for step in 0..=step_count {
-        let theta = std::f64::consts::TAU * step as f64 / step_count as f64;
-        let x = cx + rx * theta.cos();
-        let y = cy + ry * theta.sin();
-        draw_disc(
-            pixels,
-            width,
-            height,
-            x.round() as i32,
-            y.round() as i32,
-            thickness.max(1) / 2,
-            color,
-        );
-    }
-}
-
-fn draw_disc(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    center_x: i32,
-    center_y: i32,
-    radius: i32,
-    color: u32,
-) {
-    let radius = radius.max(1);
-    let radius_sq = radius * radius;
-
-    for y in (center_y - radius)..=(center_y + radius) {
-        for x in (center_x - radius)..=(center_x + radius) {
-            let dx = x - center_x;
-            let dy = y - center_y;
-            if dx * dx + dy * dy <= radius_sq {
-                blend_pixel(pixels, width, height, x, y, color);
+    /// Fills the whole buffer with a rounded card.
+    fn paint_card(&mut self, accent: Option<u32>) {
+        let (width, height) = (self.width, self.height);
+        for y in 0..height {
+            for x in 0..width {
+                self.pixels[y * width + x] = card_pixel(x, y, width, height, accent).unwrap_or(0);
             }
         }
     }
-}
 
-fn blend_pixel(pixels: &mut [u32], width: usize, height: usize, x: i32, y: i32, color: u32) {
-    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
-        return;
+    /// Blends a rounded card onto the buffer. The card must fit inside it.
+    fn blend_card(&mut self, card_x: usize, card_y: usize, card_width: usize, card_height: usize) {
+        for y in 0..card_height {
+            for x in 0..card_width {
+                if let Some(color) = card_pixel(x, y, card_width, card_height, None) {
+                    let index = (card_y + y) * self.width + card_x + x;
+                    self.pixels[index] = alpha_over(self.pixels[index], color);
+                }
+            }
+        }
     }
 
-    let index = y as usize * width + x as usize;
-    pixels[index] = alpha_over(pixels[index], color);
+    fn draw_divider(&mut self, y: i32) {
+        let right = self.width.saturating_sub(18) as i32;
+        self.blend_rect(18, y, right, y + 1, CARD_DIVIDER);
+    }
+
+    fn fill_rect(&mut self, x: i32, y: i32, rect_width: usize, rect_height: usize, color: u32) {
+        let clip = |start: i32, len: usize, max: usize| {
+            let start_clamped = start.clamp(0, max as i32) as usize;
+            let end_clamped = start.saturating_add(len as i32).clamp(0, max as i32) as usize;
+            start_clamped..end_clamped
+        };
+        let columns = clip(x, rect_width, self.width);
+        for row in clip(y, rect_height, self.height) {
+            let offset = row * self.width;
+            self.pixels[offset + columns.start..offset + columns.end].fill(color);
+        }
+    }
+
+    fn blend_rect(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+        let left = x0.min(x1).max(0) as usize;
+        let right = x0.max(x1).min(self.width as i32) as usize;
+        let top = y0.min(y1).max(0) as usize;
+        let bottom = y0.max(y1).min(self.height as i32) as usize;
+
+        for yy in top..bottom {
+            let row_offset = yy * self.width;
+            for xx in left..right {
+                let index = row_offset + xx;
+                self.pixels[index] = alpha_over(self.pixels[index], color);
+            }
+        }
+    }
+
+    fn blend_pixel(&mut self, x: i32, y: i32, color: u32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+
+        let index = y as usize * self.width + x as usize;
+        self.pixels[index] = alpha_over(self.pixels[index], color);
+    }
+
+    fn draw_stroke(&mut self, stroke: &StrokeAnnotation) {
+        if let [point] = stroke.points[..] {
+            self.draw_disc(point, (stroke.width.max(1) as i32) / 2, stroke.color);
+            return;
+        }
+
+        for segment in stroke.points.windows(2) {
+            self.draw_line(
+                segment[0],
+                segment[1],
+                stroke.color,
+                stroke.width.max(1) as i32,
+            );
+        }
+    }
+
+    fn draw_shape(&mut self, shape: &ShapeAnnotation) {
+        let thickness = shape.width.max(1) as i32;
+        match shape.kind {
+            AnnotationShapeKind::Line => {
+                self.draw_line(shape.start, shape.end, shape.color, thickness)
+            }
+            AnnotationShapeKind::Rectangle => {
+                self.draw_rectangle(shape.start, shape.end, shape.color, thickness)
+            }
+            AnnotationShapeKind::Ellipse => {
+                self.draw_ellipse(shape.start, shape.end, shape.color, thickness)
+            }
+        }
+    }
+
+    fn draw_crosshair_cursor(&mut self, cursor: AnnotationPoint) {
+        for (color, thickness) in [(0xFF00_0000, 5), (0xFFFF_FFFF, 2)] {
+            self.draw_line(
+                cursor.offset(-12, 0),
+                cursor.offset(12, 0),
+                color,
+                thickness,
+            );
+            self.draw_line(
+                cursor.offset(0, -12),
+                cursor.offset(0, 12),
+                color,
+                thickness,
+            );
+        }
+        self.draw_disc(cursor, 4, 0xFFFF_C83D);
+    }
+
+    fn draw_hand_cursor(&mut self, cursor: AnnotationPoint) {
+        // (dx, dy, width, height) of each outlined box, from the index finger down to the thumb.
+        const BOXES: [(i32, i32, usize, usize); 7] = [
+            (-2, 0, 5, 13),
+            (2, 3, 4, 11),
+            (5, 5, 4, 10),
+            (8, 7, 4, 8),
+            (-2, 12, 14, 10),
+            (-8, 12, 7, 5),
+            (-10, 15, 8, 5),
+        ];
+
+        for (dx, dy, box_width, box_height) in BOXES {
+            let (x, y) = (cursor.x + dx, cursor.y + dy);
+            self.fill_rect(x, y, box_width, box_height, 0xFF00_0000);
+            if box_width > 2 && box_height > 2 {
+                self.fill_rect(x + 1, y + 1, box_width - 2, box_height - 2, 0xFFFF_FFFF);
+            }
+        }
+        self.fill_rect(cursor.x + 1, cursor.y + 15, 6, 3, 0xFFFF_C83D);
+    }
+
+    fn draw_text_annotation(&mut self, text: &TextAnnotation) {
+        let scale = text.scale.max(1);
+        let AnnotationPoint { x, y } = text.position;
+        if text.text.is_empty() {
+            self.fill_rect(
+                x.max(0),
+                y.max(0),
+                2,
+                TEXT_GLYPH_HEIGHT * scale,
+                0xFFFF_C83D,
+            );
+            return;
+        }
+
+        self.draw_label(x + 2, y + 2, &text.text, scale, 0xC000_0000);
+        self.draw_label(x, y, &text.text, scale, text.color);
+    }
+
+    fn draw_line(
+        &mut self,
+        start: AnnotationPoint,
+        end: AnnotationPoint,
+        color: u32,
+        thickness: i32,
+    ) {
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        let steps = dx.abs().max(dy.abs()).max(1);
+        let radius = thickness.max(1) / 2;
+
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let point = AnnotationPoint {
+                x: (start.x as f64 + dx as f64 * t).round() as i32,
+                y: (start.y as f64 + dy as f64 * t).round() as i32,
+            };
+            self.draw_disc(point, radius, color);
+        }
+    }
+
+    fn draw_rectangle(
+        &mut self,
+        start: AnnotationPoint,
+        end: AnnotationPoint,
+        color: u32,
+        thickness: i32,
+    ) {
+        let corner = |x, y| AnnotationPoint { x, y };
+        let top_left = corner(start.x.min(end.x), start.y.min(end.y));
+        let top_right = corner(start.x.max(end.x), start.y.min(end.y));
+        let bottom_right = corner(start.x.max(end.x), start.y.max(end.y));
+        let bottom_left = corner(start.x.min(end.x), start.y.max(end.y));
+
+        self.draw_line(top_left, top_right, color, thickness);
+        self.draw_line(top_right, bottom_right, color, thickness);
+        self.draw_line(bottom_right, bottom_left, color, thickness);
+        self.draw_line(bottom_left, top_left, color, thickness);
+    }
+
+    fn draw_ellipse(
+        &mut self,
+        start: AnnotationPoint,
+        end: AnnotationPoint,
+        color: u32,
+        thickness: i32,
+    ) {
+        let left = start.x.min(end.x) as f64;
+        let right = start.x.max(end.x) as f64;
+        let top = start.y.min(end.y) as f64;
+        let bottom = start.y.max(end.y) as f64;
+        let rx = ((right - left) / 2.0).max(1.0);
+        let ry = ((bottom - top) / 2.0).max(1.0);
+        let cx = left + rx;
+        let cy = top + ry;
+        let step_count = (((rx + ry) * 3.0).round() as i32).max(24);
+
+        for step in 0..=step_count {
+            let theta = std::f64::consts::TAU * step as f64 / step_count as f64;
+            let point = AnnotationPoint {
+                x: (cx + rx * theta.cos()).round() as i32,
+                y: (cy + ry * theta.sin()).round() as i32,
+            };
+            self.draw_disc(point, thickness.max(1) / 2, color);
+        }
+    }
+
+    fn draw_disc(&mut self, center: AnnotationPoint, radius: i32, color: u32) {
+        let radius = radius.max(1);
+        let radius_sq = radius * radius;
+
+        for y in (center.y - radius)..=(center.y + radius) {
+            for x in (center.x - radius)..=(center.x + radius) {
+                let dx = x - center.x;
+                let dy = y - center.y;
+                if dx * dx + dy * dy <= radius_sq {
+                    self.blend_pixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    fn draw_label(&mut self, mut x: i32, y: i32, label: &str, scale: usize, color: u32) {
+        for ch in label.chars() {
+            x = self.draw_text_glyph(x, y, ch, scale, color);
+        }
+    }
+
+    /// Draws one character and returns the x position of the next one.
+    /// Characters without a glyph are drawn as their `U+XXXX` code point.
+    fn draw_text_glyph(&mut self, x: i32, y: i32, ch: char, scale: usize, color: u32) -> i32 {
+        let advance = (TEXT_GLYPH_ADVANCE * scale) as i32;
+        if ch == ' ' {
+            return x + advance;
+        }
+
+        let Some(glyph) = lookup_glyph(ch) else {
+            let fallback = format!("U+{:04X}", ch as u32);
+            return fallback
+                .chars()
+                .fold(x, |x, ch| self.draw_text_glyph(x, y, ch, scale, color));
+        };
+
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..5 {
+                if bits & (1 << (4 - col)) == 0 {
+                    continue;
+                }
+
+                let pixel_x = x + (col * scale) as i32;
+                let pixel_y = y + (row * scale) as i32;
+                // Glyph pixels starting left of or above the buffer are skipped whole.
+                if pixel_x < 0 || pixel_y < 0 {
+                    continue;
+                }
+                self.fill_rect(pixel_x, pixel_y, scale, scale, color);
+            }
+        }
+
+        x + advance
+    }
+
+    fn draw_help_section(&mut self, x: usize, y: usize, section: &HelpSection) {
+        let (heading, entries) = *section;
+        self.draw_label(
+            x as i32,
+            y as i32,
+            heading,
+            HELP_HEADING_SCALE,
+            HELP_HEADING_COLOR,
+        );
+
+        let mut row_y = y + HELP_HEADING_HEIGHT + HELP_ROW_GAP * 2;
+        for (key, desc) in entries {
+            self.draw_label(x as i32, row_y as i32, key, HELP_TEXT_SCALE, HELP_KEY_COLOR);
+            self.draw_label(
+                (x + HELP_KEY_COLUMN_WIDTH) as i32,
+                row_y as i32,
+                desc,
+                HELP_TEXT_SCALE,
+                HELP_TEXT_COLOR,
+            );
+            row_y += HELP_ROW_HEIGHT + HELP_ROW_GAP;
+        }
+    }
 }
 
 pub(crate) fn alpha_over(dst: u32, src: u32) -> u32 {
@@ -886,104 +535,6 @@ pub(crate) fn alpha_over(dst: u32, src: u32) -> u32 {
     (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_label(
-    pixels: &mut [u8],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-    label: &str,
-    scale: usize,
-    color: u32,
-) {
-    let pixels = pixels_u32(pixels);
-    draw_label_pixels(
-        pixels, width, height, x as i32, y as i32, label, scale, color,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_label_pixels(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    mut x: i32,
-    y: i32,
-    label: &str,
-    scale: usize,
-    color: u32,
-) {
-    for ch in label.chars() {
-        x = draw_text_glyph(pixels, width, height, x, y, ch, scale, color);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_text_glyph(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    mut x: i32,
-    y: i32,
-    ch: char,
-    scale: usize,
-    color: u32,
-) -> i32 {
-    if ch == ' ' {
-        return x + (6 * scale) as i32;
-    }
-
-    if let Some(glyph) = lookup_glyph(ch) {
-        return draw_bitmap_glyph(pixels, width, height, x, y, glyph, scale, color);
-    }
-
-    let fallback = format!("U+{:04X}", ch as u32);
-    for fallback_ch in fallback.chars() {
-        x = draw_text_glyph(pixels, width, height, x, y, fallback_ch, scale, color);
-    }
-    x
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_bitmap_glyph(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: i32,
-    y: i32,
-    glyph: &[u8; TEXT_GLYPH_HEIGHT],
-    scale: usize,
-    color: u32,
-) -> i32 {
-    for (row, bits) in glyph.iter().enumerate() {
-        for col in 0..5 {
-            if bits & (1 << (4 - col)) == 0 {
-                continue;
-            }
-
-            let pixel_x = x + (col * scale) as i32;
-            let pixel_y = y + (row * scale) as i32;
-            if pixel_x < 0 || pixel_y < 0 {
-                continue;
-            }
-
-            fill_rect_pixels(
-                pixels,
-                width,
-                height,
-                pixel_x as usize,
-                pixel_y as usize,
-                scale,
-                scale,
-                color,
-            );
-        }
-    }
-
-    x + (6 * scale) as i32
-}
-
 const HELP_TITLE_SCALE: usize = 3;
 const HELP_HEADING_SCALE: usize = 2;
 const HELP_TEXT_SCALE: usize = 2;
@@ -991,114 +542,84 @@ const HELP_KEY_COLOR: u32 = 0xFFFF_C83D;
 const HELP_TEXT_COLOR: u32 = 0xFFE0_E0E0;
 const HELP_HEADING_COLOR: u32 = 0xFFFF_FFFF;
 const HELP_DIM_COLOR: u32 = 0xFF7A_7A7A;
-const HELP_CHAR_W: usize = 6;
+const HELP_HEADING_HEIGHT: usize = TEXT_GLYPH_HEIGHT * HELP_HEADING_SCALE;
+const HELP_ROW_HEIGHT: usize = TEXT_GLYPH_HEIGHT * HELP_TEXT_SCALE;
+const HELP_ROW_GAP: usize = HELP_TEXT_SCALE * 3;
+const HELP_KEY_COLUMN_WIDTH: usize = 14 * TEXT_GLYPH_ADVANCE * HELP_TEXT_SCALE;
+const HELP_SECTION_WIDTH: usize = HELP_KEY_COLUMN_WIDTH + 18 * TEXT_GLYPH_ADVANCE * HELP_TEXT_SCALE;
+const HELP_COLUMN_GAP: usize = 4 * TEXT_GLYPH_ADVANCE * HELP_TEXT_SCALE;
+const HELP_PADDING: usize = 36;
 
-fn paint_rounded_card_at(
-    pixels: &mut [u32],
-    buf_width: usize,
-    card_x: usize,
-    card_y: usize,
-    card_width: usize,
-    card_height: usize,
-) {
-    let r = 12.0f32;
-    let bg_color = CARD_BG_COLOR;
-    let border_color = CARD_BORDER_COLOR;
+type HelpSection = (&'static str, &'static [(&'static str, &'static str)]);
 
-    for y in 0..card_height {
-        let buf_y = card_y + y;
-        let row_offset = buf_y * buf_width;
-        for x in 0..card_width {
-            let cx = (x as f32).clamp(r, card_width as f32 - 1.0 - r);
-            let cy = (y as f32).clamp(r, card_height as f32 - 1.0 - r);
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let d = (dx * dx + dy * dy).sqrt();
+const HELP_NAVIGATION: HelpSection = (
+    "NAVIGATION",
+    &[
+        ("Scroll", "Zoom at pointer"),
+        ("Shift+Drag", "Box zoom area"),
+        ("Drag", "Pan"),
+        ("+/-", "Zoom center"),
+        ("Arrows", "Pan"),
+        ("0", "Reset view"),
+        ("f", "Spotlight"),
+        ("[ ]", "Spotlight size"),
+        ("Dbl click", "Reset view"),
+        ("Right click", "Exit"),
+    ],
+);
 
-            let buf_x = card_x + x;
-            if d <= r + 0.5 {
-                let alpha_scale = (r + 0.5 - d).clamp(0.0, 1.0);
-                let border_alpha = (1.0 - (d - (r - 0.5)).abs()).clamp(0.0, 1.0);
+const HELP_COLOR_PICKER: HelpSection = (
+    "COLOR PICKER",
+    &[
+        ("i", "Toggle picker"),
+        ("Move", "Update swatch"),
+        ("Left click", "Copy hex"),
+        ("Esc", "Leave picker"),
+    ],
+);
 
-                let mut blended_color = if border_alpha > 0.0 {
-                    let b_alpha = ((border_color >> 24) & 0xFF) as f32 * border_alpha;
-                    let b_color = (border_color & 0x00FF_FFFF) | (((b_alpha as u32) & 0xFF) << 24);
-                    alpha_over(bg_color, b_color)
-                } else {
-                    bg_color
-                };
+const HELP_ANNOTATION: HelpSection = (
+    "ANNOTATION",
+    &[
+        ("d", "Draw zoomed"),
+        ("w", "Draw full view"),
+        ("p/h/l/r/e", "Tools"),
+        ("t", "Text mode"),
+        ("m", "Move mode"),
+        ("Drag", "Draw or move"),
+        ("Click", "Place text"),
+        ("1-0 - =", "Select color"),
+        ("[ ]", "Text size"),
+        ("Enter", "Commit text"),
+        ("Backspace", "Delete char"),
+        ("u", "Undo"),
+        ("c", "Clear"),
+        ("Esc", "Back"),
+    ],
+);
 
-                let final_a = (((blended_color >> 24) & 0xFF) as f32 * alpha_scale) as u32;
-                blended_color = (blended_color & 0x00FF_FFFF) | (final_a << 24);
-                pixels[row_offset + buf_x] = alpha_over(pixels[row_offset + buf_x], blended_color);
-            }
-        }
-    }
-}
+const HELP_GLOBAL: HelpSection = (
+    "GLOBAL",
+    &[
+        ("s", "Save screenshot"),
+        ("Ctrl+C", "Copy to clipboard"),
+        ("?", "This help"),
+    ],
+);
 
-struct HelpEntry {
-    key: &'static str,
-    desc: &'static str,
-}
+const HELP_THREE_COLUMNS: &[&[HelpSection]] = &[
+    &[HELP_NAVIGATION, HELP_GLOBAL],
+    &[HELP_COLOR_PICKER],
+    &[HELP_ANNOTATION],
+];
 
-fn help_section_height(entries: &[HelpEntry], scale: usize) -> usize {
-    let heading_h = TEXT_GLYPH_HEIGHT * HELP_HEADING_SCALE;
-    let row_h = TEXT_GLYPH_HEIGHT * scale;
-    let gap = scale * 3;
-    heading_h + gap * 2 + entries.len() * (row_h + gap)
-}
+const HELP_TWO_COLUMNS: &[&[HelpSection]] = &[
+    &[HELP_NAVIGATION, HELP_COLOR_PICKER],
+    &[HELP_ANNOTATION, HELP_GLOBAL],
+];
 
-#[allow(clippy::too_many_arguments)]
-fn draw_help_section(
-    pixels: &mut [u32],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-    heading: &str,
-    entries: &[HelpEntry],
-    scale: usize,
-    key_col_w: usize,
-) {
-    draw_label_pixels(
-        pixels,
-        width,
-        height,
-        x as i32,
-        y as i32,
-        heading,
-        HELP_HEADING_SCALE,
-        HELP_HEADING_COLOR,
-    );
-
-    let heading_h = TEXT_GLYPH_HEIGHT * HELP_HEADING_SCALE;
-    let row_h = TEXT_GLYPH_HEIGHT * scale;
-    let gap = scale * 3;
-    let mut row_y = y + heading_h + gap * 2;
-
-    for entry in entries {
-        draw_label_pixels(
-            pixels,
-            width,
-            height,
-            x as i32,
-            row_y as i32,
-            entry.key,
-            scale,
-            HELP_KEY_COLOR,
-        );
-        draw_label_pixels(
-            pixels,
-            width,
-            height,
-            (x + key_col_w) as i32,
-            row_y as i32,
-            entry.desc,
-            scale,
-            HELP_TEXT_COLOR,
-        );
-        row_y += row_h + gap;
-    }
+fn help_section_height((_, entries): &HelpSection) -> usize {
+    HELP_HEADING_HEIGHT + HELP_ROW_GAP * 2 + entries.len() * (HELP_ROW_HEIGHT + HELP_ROW_GAP)
 }
 
 pub fn paint_help_overlay(
@@ -1107,310 +628,63 @@ pub fn paint_help_overlay(
     height: usize,
     close_key: Option<CloseKey>,
 ) {
-    let pixels = pixels_u32(pixels);
-    pixels.fill(0xCC10_1018);
+    let mut canvas = Canvas::new(pixels, width, height);
+    canvas.pixels.fill(0xCC10_1018);
 
-    let nav_entries: &[HelpEntry] = &[
-        HelpEntry {
-            key: "Scroll",
-            desc: "Zoom at pointer",
-        },
-        HelpEntry {
-            key: "Shift+Drag",
-            desc: "Box zoom area",
-        },
-        HelpEntry {
-            key: "Drag",
-            desc: "Pan",
-        },
-        HelpEntry {
-            key: "+/-",
-            desc: "Zoom center",
-        },
-        HelpEntry {
-            key: "Arrows",
-            desc: "Pan",
-        },
-        HelpEntry {
-            key: "0",
-            desc: "Reset view",
-        },
-        HelpEntry {
-            key: "f",
-            desc: "Spotlight",
-        },
-        HelpEntry {
-            key: "[ ]",
-            desc: "Spotlight size",
-        },
-        HelpEntry {
-            key: "Dbl click",
-            desc: "Reset view",
-        },
-        HelpEntry {
-            key: "Right click",
-            desc: "Exit",
-        },
-    ];
-
-    let picker_entries: &[HelpEntry] = &[
-        HelpEntry {
-            key: "i",
-            desc: "Toggle picker",
-        },
-        HelpEntry {
-            key: "Move",
-            desc: "Update swatch",
-        },
-        HelpEntry {
-            key: "Left click",
-            desc: "Copy hex",
-        },
-        HelpEntry {
-            key: "Esc",
-            desc: "Leave picker",
-        },
-    ];
-
-    let annot_entries: &[HelpEntry] = &[
-        HelpEntry {
-            key: "d",
-            desc: "Draw zoomed",
-        },
-        HelpEntry {
-            key: "w",
-            desc: "Draw full view",
-        },
-        HelpEntry {
-            key: "p/h/l/r/e",
-            desc: "Tools",
-        },
-        HelpEntry {
-            key: "t",
-            desc: "Text mode",
-        },
-        HelpEntry {
-            key: "m",
-            desc: "Move mode",
-        },
-        HelpEntry {
-            key: "Drag",
-            desc: "Draw or move",
-        },
-        HelpEntry {
-            key: "Click",
-            desc: "Place text",
-        },
-        HelpEntry {
-            key: "1-0 - =",
-            desc: "Select color",
-        },
-        HelpEntry {
-            key: "[ ]",
-            desc: "Text size",
-        },
-        HelpEntry {
-            key: "Enter",
-            desc: "Commit text",
-        },
-        HelpEntry {
-            key: "Backspace",
-            desc: "Delete char",
-        },
-        HelpEntry {
-            key: "u",
-            desc: "Undo",
-        },
-        HelpEntry {
-            key: "c",
-            desc: "Clear",
-        },
-        HelpEntry {
-            key: "Esc",
-            desc: "Back",
-        },
-    ];
-
-    let global_entries: &[HelpEntry] = &[
-        HelpEntry {
-            key: "s",
-            desc: "Save screenshot",
-        },
-        HelpEntry {
-            key: "Ctrl+C",
-            desc: "Copy to clipboard",
-        },
-        HelpEntry {
-            key: "?",
-            desc: "This help",
-        },
-    ];
-
-    let scale = HELP_TEXT_SCALE;
-    let key_col_w = 14 * HELP_CHAR_W * scale;
-    let desc_col_w = 18 * HELP_CHAR_W * scale;
-    let section_w = key_col_w + desc_col_w;
-    let col_gap = 4 * HELP_CHAR_W * scale;
-
-    let nav_h = help_section_height(nav_entries, scale);
-    let picker_h = help_section_height(picker_entries, scale);
-    let annot_h = help_section_height(annot_entries, scale);
-    let global_h = help_section_height(global_entries, scale);
-
-    let title_h = TEXT_GLYPH_HEIGHT * HELP_TITLE_SCALE;
-    let pad = 36;
-    let footer_h = TEXT_GLYPH_HEIGHT * HELP_TEXT_SCALE + pad;
-
-    let use_three_cols = width >= (section_w * 3 + col_gap * 2 + pad * 2 + 80);
-
-    let (card_w, card_h) = if use_three_cols {
-        let cw = section_w * 3 + col_gap * 2 + pad * 2;
-        let left_col_h = nav_h + pad + global_h;
-        let body_h = left_col_h.max(picker_h).max(annot_h);
-        let ch = title_h + pad * 3 + body_h + footer_h;
-        (cw, ch)
+    let pad = HELP_PADDING;
+    let columns_width =
+        |count: usize| HELP_SECTION_WIDTH * count + HELP_COLUMN_GAP * (count - 1) + pad * 2;
+    let columns = if width >= columns_width(3) + 80 {
+        HELP_THREE_COLUMNS
     } else {
-        let cw = section_w * 2 + col_gap + pad * 2;
-        let left_h = nav_h + pad + picker_h;
-        let right_h = annot_h + pad + global_h;
-        let body_h = left_h.max(right_h);
-        let ch = title_h + pad * 3 + body_h + footer_h;
-        (cw, ch)
+        HELP_TWO_COLUMNS
     };
 
-    let card_w = card_w.min(width.saturating_sub(40));
-    let card_h = card_h.min(height.saturating_sub(40));
+    let title_h = TEXT_GLYPH_HEIGHT * HELP_TITLE_SCALE;
+    let footer_h = TEXT_GLYPH_HEIGHT * HELP_TEXT_SCALE + pad;
+    let body_h = columns
+        .iter()
+        .map(|column| {
+            column
+                .iter()
+                .map(|s| help_section_height(s) + pad)
+                .sum::<usize>()
+                - pad
+        })
+        .max()
+        .unwrap_or(0);
+
+    let card_w = columns_width(columns.len()).min(width.saturating_sub(40));
+    let card_h = (title_h + pad * 3 + body_h + footer_h).min(height.saturating_sub(40));
     let card_x = (width.saturating_sub(card_w)) / 2;
     let card_y = (height.saturating_sub(card_h)) / 2;
 
-    paint_rounded_card_at(pixels, width, card_x, card_y, card_w, card_h);
+    canvas.blend_card(card_x, card_y, card_w, card_h);
 
     let content_x = card_x + pad;
-    let mut y = card_y + pad;
-
-    draw_label_pixels(
-        pixels,
-        width,
-        height,
+    canvas.draw_label(
         content_x as i32,
-        y as i32,
+        (card_y + pad) as i32,
         "KEYBOARD SHORTCUTS",
         HELP_TITLE_SCALE,
         HELP_HEADING_COLOR,
     );
-    y += title_h + pad * 2;
 
-    if use_three_cols {
-        let col1_x = content_x;
-        let col2_x = content_x + section_w + col_gap;
-        let col3_x = content_x + (section_w + col_gap) * 2;
-
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col1_x,
-            y,
-            "NAVIGATION",
-            nav_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col1_x,
-            y + nav_h + pad,
-            "GLOBAL",
-            global_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col2_x,
-            y,
-            "COLOR PICKER",
-            picker_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col3_x,
-            y,
-            "ANNOTATION",
-            annot_entries,
-            scale,
-            key_col_w,
-        );
-    } else {
-        let col1_x = content_x;
-        let col2_x = content_x + section_w + col_gap;
-
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col1_x,
-            y,
-            "NAVIGATION",
-            nav_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col1_x,
-            y + nav_h + pad,
-            "COLOR PICKER",
-            picker_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col2_x,
-            y,
-            "ANNOTATION",
-            annot_entries,
-            scale,
-            key_col_w,
-        );
-        draw_help_section(
-            pixels,
-            width,
-            height,
-            col2_x,
-            y + annot_h + pad,
-            "GLOBAL",
-            global_entries,
-            scale,
-            key_col_w,
-        );
+    let body_y = card_y + pad + title_h + pad * 2;
+    for (index, column) in columns.iter().enumerate() {
+        let x = content_x + index * (HELP_SECTION_WIDTH + HELP_COLUMN_GAP);
+        let mut y = body_y;
+        for section in column.iter() {
+            canvas.draw_help_section(x, y, section);
+            y += help_section_height(section) + pad;
+        }
     }
 
-    let close_label = match close_key {
-        Some(k) => k.label(),
-        None => "Esc",
-    };
-    let footer_text = format!("Press ? or {} to close", close_label);
-    let footer_w = footer_text.len() * HELP_CHAR_W * HELP_TEXT_SCALE;
+    let footer_text = format!("Press ? or {} to close", close_key_label(close_key));
+    let footer_w = footer_text.len() * TEXT_GLYPH_ADVANCE * HELP_TEXT_SCALE;
     let footer_x = card_x + (card_w.saturating_sub(footer_w)) / 2;
     let footer_y = card_y + card_h - footer_h;
-    draw_label_pixels(
-        pixels,
-        width,
-        height,
+    canvas.draw_label(
         footer_x as i32,
         footer_y as i32,
         &footer_text,
@@ -1506,10 +780,6 @@ fn lookup_glyph(ch: char) -> Option<&'static [u8; TEXT_GLYPH_HEIGHT]> {
     }
 }
 
-fn pixels_u32(pixels: &mut [u8]) -> &mut [u32] {
-    cast_slice_mut(pixels)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::state::{
@@ -1518,15 +788,14 @@ mod tests {
     };
 
     use super::{
-        CursorStyle, OverlayCursor, SPOTLIGHT_DIM_COLOR, draw_annotation_overlay,
-        draw_spotlight_overlay, fill_rect, lookup_glyph, paint_color_picker, paint_toast,
-        paint_zoom_badge,
+        AnnotationScene, Canvas, CursorStyle, OverlayCursor, draw_annotation_overlay,
+        draw_spotlight_overlay, lookup_glyph, paint_color_picker, paint_toast, paint_zoom_badge,
     };
 
     #[test]
     fn fill_rect_clips_to_buffer_bounds() {
         let mut pixels = vec![0_u8; 4 * 4 * 4];
-        fill_rect(&mut pixels, 4, 4, 2, 2, 4, 4, 0xFFFF_FFFF);
+        Canvas::new(&mut pixels, 4, 4).fill_rect(2, 2, 4, 4, 0xFFFF_FFFF);
 
         let painted = pixels
             .chunks_exact(4)
@@ -1545,7 +814,7 @@ mod tests {
         let edge = &pixels[0..4];
 
         assert_eq!(center, &0x0000_0000_u32.to_ne_bytes());
-        assert_eq!(edge, &SPOTLIGHT_DIM_COLOR.to_ne_bytes());
+        assert_eq!(edge, &0xAA00_0000_u32.to_ne_bytes());
     }
 
     #[test]
@@ -1560,7 +829,15 @@ mod tests {
             width: 4,
         })];
 
-        draw_annotation_overlay(&mut pixels, 32, 32, &annotations, None, None, None, None);
+        draw_annotation_overlay(
+            &mut pixels,
+            32,
+            32,
+            &AnnotationScene {
+                annotations,
+                ..Default::default()
+            },
+        );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -1576,7 +853,15 @@ mod tests {
             width: 4,
         });
 
-        draw_annotation_overlay(&mut pixels, 48, 48, &[], Some(&active), None, None, None);
+        draw_annotation_overlay(
+            &mut pixels,
+            48,
+            48,
+            &AnnotationScene {
+                active_annotation: Some(active),
+                ..Default::default()
+            },
+        );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
     }
@@ -1589,14 +874,13 @@ mod tests {
             &mut pixels,
             48,
             48,
-            &[],
-            None,
-            None,
-            Some(OverlayCursor {
-                position: AnnotationPoint { x: 20, y: 18 },
-                style: CursorStyle::Crosshair,
-            }),
-            None,
+            &AnnotationScene {
+                cursor: Some(OverlayCursor {
+                    position: AnnotationPoint { x: 20, y: 18 },
+                    style: CursorStyle::Crosshair,
+                }),
+                ..Default::default()
+            },
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
@@ -1610,14 +894,13 @@ mod tests {
             &mut pixels,
             64,
             64,
-            &[],
-            None,
-            None,
-            Some(OverlayCursor {
-                position: AnnotationPoint { x: 20, y: 12 },
-                style: CursorStyle::Hand,
-            }),
-            None,
+            &AnnotationScene {
+                cursor: Some(OverlayCursor {
+                    position: AnnotationPoint { x: 20, y: 12 },
+                    style: CursorStyle::Hand,
+                }),
+                ..Default::default()
+            },
         );
 
         let hotspot = &pixels[(12 * 64 + 20) * 4..(12 * 64 + 21) * 4];
@@ -1685,11 +968,10 @@ mod tests {
             &mut pixels,
             96,
             96,
-            &[AnnotationItem::Text(text)],
-            None,
-            None,
-            None,
-            None,
+            &AnnotationScene {
+                annotations: vec![AnnotationItem::Text(text)],
+                ..Default::default()
+            },
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));
@@ -1709,11 +991,10 @@ mod tests {
             &mut pixels,
             160,
             96,
-            &[AnnotationItem::Text(text)],
-            None,
-            None,
-            None,
-            None,
+            &AnnotationScene {
+                annotations: vec![AnnotationItem::Text(text)],
+                ..Default::default()
+            },
         );
 
         assert!(pixels.chunks_exact(4).any(|chunk| chunk != [0, 0, 0, 0]));

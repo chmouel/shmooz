@@ -22,7 +22,7 @@ use wayland_protocols_wlr::{
 use crate::{
     config::Config,
     error::{AppError, Result},
-    output::{OutputState, OutputTransform, guess_logical_geometry},
+    output::{OutputState, guess_logical_geometry},
     state::AppState,
 };
 
@@ -30,18 +30,6 @@ pub struct WaylandContext {
     pub connection: Connection,
     pub event_queue: EventQueue<AppState>,
     pub state: AppState,
-}
-
-pub struct StartupSummary {
-    pub total_outputs: usize,
-    pub selected_outputs: Vec<OutputDetails>,
-    pub used_xdg_output: bool,
-}
-
-pub struct OutputDetails {
-    pub name: Option<String>,
-    pub logical_geometry: crate::output::Rect,
-    pub logical_scale: f64,
 }
 
 impl WaylandContext {
@@ -89,25 +77,6 @@ impl WaylandContext {
             connection,
             event_queue,
             state,
-        })
-    }
-
-    pub fn summary(&self) -> Result<StartupSummary> {
-        let selected_outputs = self
-            .state
-            .selected_outputs()?
-            .into_iter()
-            .map(|output| OutputDetails {
-                name: output.name.clone(),
-                logical_geometry: output.logical_geometry,
-                logical_scale: output.logical_scale,
-            })
-            .collect::<Vec<_>>();
-
-        Ok(StartupSummary {
-            total_outputs: self.state.outputs.len(),
-            selected_outputs,
-            used_xdg_output: self.state.globals.xdg_output_manager.is_some(),
         })
     }
 }
@@ -184,7 +153,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     );
                     state
                         .outputs
-                        .insert(name, OutputState::new(name, wl_output));
+                        .insert(name, OutputState::new(name, Some(wl_output)));
                 }
                 "zwlr_screencopy_manager_v1" => {
                     let manager = registry
@@ -277,7 +246,10 @@ impl Dispatch<wl_output::WlOutput, u32> for AppState {
             } => {
                 output.geometry.x = x;
                 output.geometry.y = y;
-                output.transform = map_output_transform(transform);
+                output.transform = match transform {
+                    WEnum::Value(transform) => transform,
+                    WEnum::Unknown(_) => wl_output::Transform::Normal,
+                };
             }
             wl_output::Event::Mode {
                 flags,
@@ -323,7 +295,6 @@ impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for AppState {
             zxdg_output_v1::Event::Name { name } => {
                 output.name = Some(name);
             }
-            zxdg_output_v1::Event::Description { description: _ } => {}
             _ => {}
         }
     }
@@ -341,19 +312,4 @@ fn is_current_mode(flags: WEnum<wl_output::Mode>) -> bool {
         flags,
         WEnum::Value(value) if value.contains(wl_output::Mode::Current)
     )
-}
-
-fn map_output_transform(transform: WEnum<wl_output::Transform>) -> OutputTransform {
-    match transform {
-        WEnum::Value(wl_output::Transform::Normal) => OutputTransform::Normal,
-        WEnum::Value(wl_output::Transform::_90) => OutputTransform::Rot90,
-        WEnum::Value(wl_output::Transform::_180) => OutputTransform::Rot180,
-        WEnum::Value(wl_output::Transform::_270) => OutputTransform::Rot270,
-        WEnum::Value(wl_output::Transform::Flipped) => OutputTransform::Flipped,
-        WEnum::Value(wl_output::Transform::Flipped90) => OutputTransform::Flipped90,
-        WEnum::Value(wl_output::Transform::Flipped180) => OutputTransform::Flipped180,
-        WEnum::Value(wl_output::Transform::Flipped270) => OutputTransform::Flipped270,
-        WEnum::Value(_) => OutputTransform::Unknown,
-        WEnum::Unknown(_) => OutputTransform::Unknown,
-    }
 }

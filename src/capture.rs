@@ -8,6 +8,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 
 use crate::{
     error::{AppError, Result},
+    output::is_quarter_turn,
     shm::ShmBuffer,
     state::AppState,
     window,
@@ -17,8 +18,7 @@ pub fn begin_output_capture(state: &mut AppState, output_id: u32) -> Result<()> 
     if state
         .outputs
         .get(&output_id)
-        .map(|output| output.capture_pending)
-        .unwrap_or(false)
+        .is_some_and(|output| output.capture_pending)
     {
         return Ok(());
     }
@@ -31,8 +31,7 @@ pub fn begin_output_capture(state: &mut AppState, output_id: u32) -> Result<()> 
     let wl_output = state
         .outputs
         .get(&output_id)
-        .and_then(|output| output.wl_output.as_ref())
-        .cloned()
+        .and_then(|output| output.wl_output.clone())
         .ok_or_else(|| {
             AppError::runtime(format!(
                 "output {output_id} is no longer available for screencopy"
@@ -107,8 +106,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, u32> for AppState
                 if state
                     .outputs
                     .get(output_id)
-                    .map(|output| output.transform.is_quarter_turn())
-                    .unwrap_or(false)
+                    .is_some_and(|output| is_quarter_turn(output.transform))
                 {
                     std::mem::swap(&mut buffer.width, &mut buffer.height);
                 }
@@ -151,11 +149,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, u32> for AppState
                 state.record_fatal(AppError::CaptureFailed { output: name });
                 frame.destroy();
             }
-            zwlr_screencopy_frame_v1::Event::Flags { .. }
-            | zwlr_screencopy_frame_v1::Event::Damage { .. }
-            | zwlr_screencopy_frame_v1::Event::LinuxDmabuf { .. }
-            | zwlr_screencopy_frame_v1::Event::BufferDone
-            | _ => {}
+            _ => {}
         }
     }
 }

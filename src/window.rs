@@ -15,12 +15,19 @@ use crate::{
     state::{ActiveAnnotation, ActiveMove, AnnotationItem, AnnotationPoint, TextAnnotation},
     zoom::{
         Size, ViewRect, apply_zoom, aspect_ratio, clamp_view, ease_out_cubic, interpolate_view,
-        view_rect_nearly_equal,
+        screen_center, view_rect_nearly_equal,
     },
 };
 
 pub const APP_TITLE: &str = "shmooz";
 pub const ZOOM_ANIMATION_DURATION: Duration = Duration::from_millis(140);
+
+pub struct OverlayLayer {
+    pub surface: wl_surface::WlSurface,
+    pub subsurface: wl_subsurface::WlSubsurface,
+    pub buffer: ShmBuffer,
+    pub visible: bool,
+}
 
 pub struct OverlayBufferSlot {
     pub buffer: ShmBuffer,
@@ -34,32 +41,17 @@ pub struct WindowState {
     pub viewport: wp_viewport::WpViewport,
     #[allow(dead_code)]
     pub layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
-    pub spotlight_surface: Option<wl_surface::WlSurface>,
-    pub spotlight_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub spotlight_buffer: Option<ShmBuffer>,
-    pub spotlight_visible: bool,
+    pub spotlight: Option<OverlayLayer>,
     pub annotation_surface: Option<wl_surface::WlSurface>,
     pub annotation_subsurface: Option<wl_subsurface::WlSubsurface>,
     pub annotation_buffers: Vec<OverlayBufferSlot>,
     pub annotation_frame_callback: Option<wl_callback::WlCallback>,
     pub annotation_redraw_pending: bool,
     pub annotation_visible: bool,
-    pub zoom_badge_surface: Option<wl_surface::WlSurface>,
-    pub zoom_badge_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub zoom_badge_buffer: Option<ShmBuffer>,
-    pub zoom_badge_visible: bool,
-    pub toast_surface: Option<wl_surface::WlSurface>,
-    pub toast_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub toast_buffer: Option<ShmBuffer>,
-    pub toast_visible: bool,
-    pub color_picker_surface: Option<wl_surface::WlSurface>,
-    pub color_picker_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub color_picker_buffer: Option<ShmBuffer>,
-    pub color_picker_visible: bool,
-    pub help_surface: Option<wl_surface::WlSurface>,
-    pub help_subsurface: Option<wl_subsurface::WlSubsurface>,
-    pub help_buffer: Option<ShmBuffer>,
-    pub help_visible: bool,
+    pub zoom_badge: Option<OverlayLayer>,
+    pub toast: Option<OverlayLayer>,
+    pub color_picker: Option<OverlayLayer>,
+    pub help: Option<OverlayLayer>,
     pub annotations: Vec<AnnotationItem>,
     pub active_annotation: Option<ActiveAnnotation>,
     pub active_move: Option<ActiveMove>,
@@ -101,8 +93,7 @@ pub fn create_window_for_output(
     let wl_output = state
         .outputs
         .get(&output_id)
-        .and_then(|output| output.wl_output.as_ref())
-        .cloned()
+        .and_then(|output| output.wl_output.clone())
         .ok_or_else(|| {
             AppError::runtime(format!(
                 "output {output_id} is no longer available for window creation"
@@ -119,30 +110,18 @@ pub fn create_window_for_output(
         qh,
         output_id,
     );
-    let (bw, bh) = state
-        .outputs
-        .get(&output_id)
+    let output = state.outputs.get(&output_id);
+    let buffer_size = output
         .and_then(|output| output.buffer_dimensions())
+        .map(Size::from_dims)
         .ok_or_else(|| {
             AppError::runtime(format!(
                 "output {output_id} has no captured buffer for window creation"
             ))
         })?;
-    let buffer_size = Size {
-        width: bw as f64,
-        height: bh as f64,
-    };
     let initial_view_source = ViewRect::full(buffer_size);
-    let logical_size = state
-        .outputs
-        .get(&output_id)
-        .map(|output| {
-            let (w, h) = output.logical_size();
-            Size {
-                width: w as f64,
-                height: h as f64,
-            }
-        })
+    let logical_size = output
+        .map(|output| Size::from_dims(output.logical_size()))
         .unwrap_or_default();
 
     layer_surface.set_anchor(
@@ -165,32 +144,17 @@ pub fn create_window_for_output(
             surface,
             viewport,
             layer_surface,
-            spotlight_surface: None,
-            spotlight_subsurface: None,
-            spotlight_buffer: None,
-            spotlight_visible: false,
+            spotlight: None,
             annotation_surface: None,
             annotation_subsurface: None,
             annotation_buffers: Vec::new(),
             annotation_frame_callback: None,
             annotation_redraw_pending: false,
             annotation_visible: false,
-            zoom_badge_surface: None,
-            zoom_badge_subsurface: None,
-            zoom_badge_buffer: None,
-            zoom_badge_visible: false,
-            toast_surface: None,
-            toast_subsurface: None,
-            toast_buffer: None,
-            toast_visible: false,
-            color_picker_surface: None,
-            color_picker_subsurface: None,
-            color_picker_buffer: None,
-            color_picker_visible: false,
-            help_surface: None,
-            help_subsurface: None,
-            help_buffer: None,
-            help_visible: false,
+            zoom_badge: None,
+            toast: None,
+            color_picker: None,
+            help: None,
             annotations: Vec::new(),
             active_annotation: None,
             active_move: None,
@@ -251,36 +215,22 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
 
                 layer_surface.ack_configure(serial);
 
-                let output_transform = state
-                    .outputs
-                    .get(output_id)
-                    .map(|output| output.transform.to_wayland());
+                let output = state.outputs.get(output_id);
+                let output_transform = output.map(|output| output.transform);
 
-                let zoom_setup = if state.config.initial_zoom > 0.0 {
-                    let output = state.outputs.get(output_id);
+                let zoom_setup = (state.config.initial_zoom > 0.0).then(|| {
                     let zoom_pixels = output
-                        .map(|o| o.geometry.height as f64 * state.config.initial_zoom)
+                        .map(|o| f64::from(o.geometry.height) * state.config.initial_zoom)
                         .unwrap_or(0.0);
                     let logical_size = output
-                        .map(|o| {
-                            let (w, h) = o.logical_size();
-                            Size {
-                                width: w as f64,
-                                height: h as f64,
-                            }
-                        })
+                        .map(|o| Size::from_dims(o.logical_size()))
                         .unwrap_or_default();
                     let buffer_size = output
                         .and_then(|o| o.buffer_dimensions())
-                        .map(|(w, h)| Size {
-                            width: w as f64,
-                            height: h as f64,
-                        })
+                        .map(Size::from_dims)
                         .unwrap_or_default();
-                    Some((zoom_pixels, logical_size, buffer_size))
-                } else {
-                    None
-                };
+                    (zoom_pixels, logical_size, buffer_size)
+                });
 
                 let Some(window) = state.windows.get_mut(output_id) else {
                     return;
@@ -298,7 +248,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32> for AppState {
                     apply_zoom(
                         &mut window.view_source,
                         zoom_pixels,
-                        crate::zoom::screen_center(logical_size),
+                        screen_center(logical_size),
                         logical_size,
                         buffer_size,
                     );
@@ -402,15 +352,8 @@ pub fn render_window(state: &mut AppState, output_id: u32) {
             return;
         };
 
-        let (lw, lh) = output.logical_size();
-        let logical_size = Size {
-            width: lw as f64,
-            height: lh as f64,
-        };
-        let buffer_size = Size {
-            width: buffer.width as f64,
-            height: buffer.height as f64,
-        };
+        let logical_size = Size::from_dims(output.logical_size());
+        let buffer_size = Size::from_dims((buffer.width, buffer.height));
         let ratio = aspect_ratio(logical_size, buffer_size);
         clamp_view(&mut window.view_source, buffer_size, ratio);
 
